@@ -1,0 +1,16 @@
+[book]
+authors = ["Teddy Tennant"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Fugue — Security-First AI Agent Gateway"
+
+[output.html]
+default-theme = "coal"
+preferred-dark-theme = "coal"
+additional-css = ["theme/catppuccin.css"]
+additional-js = ["theme/catppuccin.js"]
+
+[output.html.fold]
+enable = true
+level = 1
