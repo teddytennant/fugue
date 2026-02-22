@@ -1,0 +1,126 @@
+// Fugue Plugin Interface Definition
+//
+// Plugins implement the `tool` world, exporting the required functions
+// and importing capability-gated host functions.
+
+package fugue:plugin@0.1.0;
+
+// Types shared across interfaces
+interface types {
+    // A tool call from the LLM
+    record tool-call {
+        name: string,
+        arguments: string, // JSON string
+    }
+
+    // Result of executing a tool
+    record tool-result {
+        success: bool,
+        output: string,
+        error: option<string>,
+    }
+
+    // Tool description for LLM function calling
+    record tool-description {
+        name: string,
+        description: string,
+    }
+
+    // Key-value pair for state store
+    record kv-entry {
+        key: string,
+        value: string,
+    }
+
+    // HTTP request
+    record http-request {
+        method: string,
+        url: string,
+        headers: list<tuple<string, string>>,
+        body: option<string>,
+    }
+
+    // HTTP response
+    record http-response {
+        status: u16,
+        headers: list<tuple<string, string>>,
+        body: string,
+    }
+
+    // LLM completion request
+    record llm-message {
+        role: string,
+        content: string,
+    }
+
+    record llm-response {
+        content: string,
+        model: string,
+    }
+}
+
+// Host-provided imports (capability-gated)
+interface http {
+    use types.{http-request, http-response};
+
+    // Requires: net:outbound or net:outbound:<url>
+    request: func(req: http-request) -> result<http-response, string>;
+}
+
+interface filesystem {
+    // Requires: fs:read or fs:read:<path>
+    read-file: func(path: string) -> result<string, string>;
+
+    // Requires: fs:write or fs:write:<path>
+    write-file: func(path: string, content: string) -> result<_, string>;
+}
+
+interface state {
+    use types.{kv-entry};
+
+    // Requires: state:read
+    get: func(namespace: string, key: string) -> result<option<string>, string>;
+
+    // Requires: state:write
+    set: func(namespace: string, key: string, value: string) -> result<_, string>;
+
+    // Requires: state:read
+    list-keys: func(namespace: string) -> result<list<string>, string>;
+
+    // Requires: state:write
+    delete: func(namespace: string, key: string) -> result<bool, string>;
+}
+
+interface llm {
+    use types.{llm-message, llm-response};
+
+    // Requires: llm:call
+    complete: func(provider: string, messages: list<llm-message>) -> result<llm-response, string>;
+}
+
+// Plugin-exported interface
+interface tool {
+    use types.{tool-call, tool-result, tool-description};
+
+    // Called once when the plugin is loaded
+    init: func() -> result<_, string>;
+
+    // Return a description of this tool for LLM function calling
+    describe: func() -> tool-description;
+
+    // Return a JSON schema for the tool's arguments
+    schema: func() -> string;
+
+    // Execute the tool
+    execute: func(call: tool-call) -> tool-result;
+}
+
+// The world that plugins target
+world plugin {
+    import http;
+    import filesystem;
+    import state;
+    import llm;
+
+    export tool;
+}
