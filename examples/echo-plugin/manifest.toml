@@ -1,0 +1,12 @@
+# Example Fugue plugin manifest
+
+# This plugin only needs to send/receive messages
+capabilities = ["ipc:messages"]
+
+[plugin]
+name = "echo-tool"
+version = "0.1.0"
+description = "Echoes input back to the user. A minimal example plugin."
+author = "Fugue Team"
+license = "MIT"
+wasm_file = "echo_tool.wasm"
