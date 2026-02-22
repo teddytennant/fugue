@@ -1,0 +1,51 @@
+# Fugue example configuration
+# Copy to ~/.config/fugue/config.toml
+
+[core]
+log_level = "info"
+audit_enabled = true
+
+# --- LLM Providers ---
+
+[providers.ollama]
+type = "ollama"
+base_url = "http://localhost:11434"
+model = "llama3.2"
+
+# Anthropic example (requires vault credential):
+# [providers.anthropic]
+# type = "anthropic"
+# credential = "vault:anthropic-key"
+# model = "claude-sonnet-4-20250514"
+
+# --- Channel Adapters ---
+
+[channels.cli]
+type = "cli"
+
+# Telegram example:
+# [channels.telegram]
+# type = "telegram"
+# credential = "vault:telegram-token"
+# allowed_ids = ["123456789"]
+
+# --- Network (disabled by default) ---
+
+[network]
+http_enabled = false
+bind_address = "127.0.0.1"
+port = 8432
+# i_understand_the_risk = true  # Required to bind to non-localhost
+
+# --- Credential Vault ---
+
+[vault]
+backend = "encryptedfile"
+# encrypted_file_path = "/custom/path/vault.enc"
+
+# --- Plugin System ---
+
+[plugins]
+memory_limit_bytes = 67108864    # 64 MiB
+fuel_limit = 1000000000
+execution_timeout_ms = 30000
