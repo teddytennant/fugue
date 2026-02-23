@@ -27,6 +27,20 @@ pub enum Capability {
     CredentialRead(String),
 }
 
+/// Check that `granted` is a prefix of `requested` at a path/URL boundary.
+/// Prevents "/tmp" from matching "/tmp_evil" while still matching "/tmp/file".
+fn path_prefix_matches(granted: &str, requested: &str) -> bool {
+    if requested == granted {
+        return true;
+    }
+    let prefix = if granted.ends_with('/') {
+        granted.to_string()
+    } else {
+        format!("{}/", granted)
+    };
+    requested.starts_with(&prefix)
+}
+
 impl Capability {
     /// Parse a capability string like "fs:read", "net:outbound:https://api.example.com"
     pub fn parse(s: &str) -> Option<Self> {
@@ -67,19 +81,19 @@ impl Capability {
         match (self, requested) {
             // Global fs:read satisfies any scoped fs:read
             (Capability::FsRead(None), Capability::FsRead(_)) => true,
-            // Scoped fs:read satisfies if path matches
+            // Scoped fs:read satisfies if path matches at a boundary
             (Capability::FsRead(Some(granted)), Capability::FsRead(Some(requested))) => {
-                requested.starts_with(granted.as_str())
+                path_prefix_matches(granted, requested)
             }
             // Global fs:write satisfies any scoped fs:write
             (Capability::FsWrite(None), Capability::FsWrite(_)) => true,
             (Capability::FsWrite(Some(granted)), Capability::FsWrite(Some(requested))) => {
-                requested.starts_with(granted.as_str())
+                path_prefix_matches(granted, requested)
             }
             // Global net:outbound satisfies any scoped net:outbound
             (Capability::NetOutbound(None), Capability::NetOutbound(_)) => true,
             (Capability::NetOutbound(Some(granted)), Capability::NetOutbound(Some(requested))) => {
-                requested.starts_with(granted.as_str())
+                path_prefix_matches(granted, requested)
             }
             // Exact match for everything else
             _ => self == requested,
@@ -276,5 +290,128 @@ mod tests {
         let granted = Capability::NetOutbound(None);
         let requested = Capability::NetOutbound(Some("https://anywhere.com".to_string()));
         assert!(granted.satisfies(&requested));
+    }
+
+    // --- Path traversal prevention tests ---
+
+    #[test]
+    fn test_fs_read_scoped_does_not_satisfy_similar_prefix() {
+        let granted = Capability::FsRead(Some("/tmp".to_string()));
+        let requested = Capability::FsRead(Some("/tmp_evil".to_string()));
+        assert!(!granted.satisfies(&requested));
+    }
+
+    #[test]
+    fn test_fs_write_scoped_does_not_satisfy_similar_prefix() {
+        let granted = Capability::FsWrite(Some("/home/user".to_string()));
+        let requested = Capability::FsWrite(Some("/home/user2".to_string()));
+        assert!(!granted.satisfies(&requested));
+    }
+
+    #[test]
+    fn test_net_outbound_scoped_does_not_satisfy_similar_prefix() {
+        let granted = Capability::NetOutbound(Some("https://api.example.com".to_string()));
+        let requested =
+            Capability::NetOutbound(Some("https://api.example.com.evil.net".to_string()));
+        assert!(!granted.satisfies(&requested));
+    }
+
+    #[test]
+    fn test_fs_read_scoped_exact_match() {
+        let granted = Capability::FsRead(Some("/tmp/data".to_string()));
+        let requested = Capability::FsRead(Some("/tmp/data".to_string()));
+        assert!(granted.satisfies(&requested));
+    }
+
+    #[test]
+    fn test_fs_read_scoped_with_trailing_slash() {
+        let granted = Capability::FsRead(Some("/tmp/".to_string()));
+        let requested = Capability::FsRead(Some("/tmp/data/file.txt".to_string()));
+        assert!(granted.satisfies(&requested));
+    }
+
+    // --- FsWrite scoped tests ---
+
+    #[test]
+    fn test_fs_write_scoped_satisfies_subpath() {
+        let granted = Capability::FsWrite(Some("/var/data".to_string()));
+        let requested = Capability::FsWrite(Some("/var/data/output.log".to_string()));
+        assert!(granted.satisfies(&requested));
+    }
+
+    #[test]
+    fn test_fs_write_scoped_does_not_satisfy_different_path() {
+        let granted = Capability::FsWrite(Some("/var/data".to_string()));
+        let requested = Capability::FsWrite(Some("/etc/config".to_string()));
+        assert!(!granted.satisfies(&requested));
+    }
+
+    #[test]
+    fn test_fs_write_global_satisfies_scoped() {
+        let granted = Capability::FsWrite(None);
+        let requested = Capability::FsWrite(Some("/anywhere".to_string()));
+        assert!(granted.satisfies(&requested));
+    }
+
+    // --- Scoped does not satisfy global ---
+
+    #[test]
+    fn test_fs_read_scoped_does_not_satisfy_global() {
+        let granted = Capability::FsRead(Some("/tmp".to_string()));
+        let requested = Capability::FsRead(None);
+        assert!(!granted.satisfies(&requested));
+    }
+
+    #[test]
+    fn test_fs_write_scoped_does_not_satisfy_global() {
+        let granted = Capability::FsWrite(Some("/tmp".to_string()));
+        let requested = Capability::FsWrite(None);
+        assert!(!granted.satisfies(&requested));
+    }
+
+    #[test]
+    fn test_net_outbound_scoped_does_not_satisfy_global() {
+        let granted = Capability::NetOutbound(Some("https://example.com".to_string()));
+        let requested = Capability::NetOutbound(None);
+        assert!(!granted.satisfies(&requested));
+    }
+
+    // --- Cross-type does not satisfy ---
+
+    #[test]
+    fn test_fs_read_does_not_satisfy_fs_write() {
+        let granted = Capability::FsRead(None);
+        let requested = Capability::FsWrite(None);
+        assert!(!granted.satisfies(&requested));
+    }
+
+    // --- check_capabilities edge cases ---
+
+    #[test]
+    fn test_check_capabilities_empty_granted() {
+        let granted: Vec<Capability> = vec![];
+        let requested = vec![Capability::IpcMessages];
+        let denied = check_capabilities(&granted, &requested);
+        assert_eq!(denied, vec![Capability::IpcMessages]);
+    }
+
+    #[test]
+    fn test_check_capabilities_empty_requested() {
+        let granted = vec![Capability::IpcMessages];
+        let requested: Vec<Capability> = vec![];
+        let denied = check_capabilities(&granted, &requested);
+        assert!(denied.is_empty());
+    }
+
+    // --- path_prefix_matches unit tests ---
+
+    #[test]
+    fn test_path_prefix_matches_direct() {
+        assert!(path_prefix_matches("/tmp", "/tmp"));
+        assert!(path_prefix_matches("/tmp", "/tmp/file"));
+        assert!(path_prefix_matches("/tmp/", "/tmp/file"));
+        assert!(!path_prefix_matches("/tmp", "/tmp_evil"));
+        assert!(!path_prefix_matches("/tmp", "/tm"));
+        assert!(!path_prefix_matches("/tmp/data", "/tmp"));
     }
 }
