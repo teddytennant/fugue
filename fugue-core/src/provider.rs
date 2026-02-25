@@ -7,6 +7,26 @@ use crate::error::{FugueError, Result};
 use crate::ipc::ChatMessage;
 use crate::vault::Vault;
 
+/// Classify an HTTP error status code into a descriptive category
+fn classify_http_error(status: reqwest::StatusCode, provider: &str, body: &str) -> FugueError {
+    let code = status.as_u16();
+    let category = match code {
+        401 => "authentication error (invalid or missing API key)",
+        403 => "forbidden (insufficient permissions)",
+        404 => "not found (check base_url and model name)",
+        429 => "rate limited (too many requests, retry after backoff)",
+        500 => "internal server error (provider-side issue)",
+        502 => "bad gateway (provider may be temporarily unavailable)",
+        503 => "service unavailable (provider may be overloaded or down)",
+        _ => "request failed",
+    };
+
+    FugueError::Provider(format!(
+        "{} API error: {} {} - {}. Response: {}",
+        provider, code, category, status.canonical_reason().unwrap_or("Unknown"), body
+    ))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmResponse {
     pub content: String,
@@ -126,10 +146,7 @@ impl ProviderManager {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(FugueError::Provider(format!(
-                "Ollama API error ({}): {}",
-                status, body
-            )));
+            return Err(classify_http_error(status, "Ollama", &body));
         }
 
         let data: serde_json::Value = resp.json().await?;
@@ -205,10 +222,7 @@ impl ProviderManager {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(FugueError::Provider(format!(
-                "Anthropic API error ({}): {}",
-                status, body
-            )));
+            return Err(classify_http_error(status, "Anthropic", &body));
         }
 
         let data: serde_json::Value = resp.json().await?;
@@ -271,10 +285,7 @@ impl ProviderManager {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(FugueError::Provider(format!(
-                "OpenAI API error ({}): {}",
-                status, body
-            )));
+            return Err(classify_http_error(status, "OpenAI", &body));
         }
 
         let data: serde_json::Value = resp.json().await?;
@@ -337,5 +348,54 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn test_classify_http_error_auth() {
+        let err = classify_http_error(
+            reqwest::StatusCode::UNAUTHORIZED,
+            "OpenAI",
+            "invalid api key",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("401"));
+        assert!(msg.contains("authentication error"));
+        assert!(msg.contains("OpenAI"));
+    }
+
+    #[test]
+    fn test_classify_http_error_rate_limit() {
+        let err = classify_http_error(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "Anthropic",
+            "rate limit exceeded",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("429"));
+        assert!(msg.contains("rate limited"));
+    }
+
+    #[test]
+    fn test_classify_http_error_server() {
+        let err = classify_http_error(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "Ollama",
+            "internal error",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("500"));
+        assert!(msg.contains("internal server error"));
+    }
+
+    #[test]
+    fn test_classify_http_error_generic() {
+        let err = classify_http_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            "OpenAI",
+            "bad request body",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("400"));
+        assert!(msg.contains("request failed"));
     }
 }

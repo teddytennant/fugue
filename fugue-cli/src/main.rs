@@ -87,19 +87,35 @@ enum ConfigAction {
 
 #[derive(Subcommand)]
 enum VaultAction {
+    /// Initialize the vault with a password-derived key
+    Init {
+        /// Derive encryption key from a password instead of storing a plaintext key file
+        #[arg(short, long)]
+        password: bool,
+    },
     /// Set a credential
     Set {
         /// Credential name
         name: String,
         /// Credential value (omit to read from stdin)
         value: Option<String>,
+        /// Use password-derived key (prompts for password)
+        #[arg(short, long)]
+        password: bool,
     },
     /// List stored credentials
-    List,
+    List {
+        /// Use password-derived key (prompts for password)
+        #[arg(short, long)]
+        password: bool,
+    },
     /// Remove a credential
     Remove {
         /// Credential name
         name: String,
+        /// Use password-derived key (prompts for password)
+        #[arg(short, long)]
+        password: bool,
     },
 }
 
@@ -168,11 +184,14 @@ async fn main() -> anyhow::Result<()> {
             ConfigAction::Validate => commands::config::validate().await,
         },
         Commands::Vault { action } => match action {
-            VaultAction::Set { name, value } => {
-                commands::vault::set(&name, value.as_deref()).await
+            VaultAction::Init { password } => {
+                commands::vault::init(password).await
             }
-            VaultAction::List => commands::vault::list().await,
-            VaultAction::Remove { name } => commands::vault::remove(&name).await,
+            VaultAction::Set { name, value, password } => {
+                commands::vault::set(&name, value.as_deref(), password).await
+            }
+            VaultAction::List { password } => commands::vault::list(password).await,
+            VaultAction::Remove { name, password } => commands::vault::remove(&name, password).await,
         },
         Commands::Plugin { action } => match action {
             PluginAction::Install { path } => commands::plugin::install(&path).await,

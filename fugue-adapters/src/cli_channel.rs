@@ -44,12 +44,14 @@ pub async fn run_cli_adapter(
         }
 
         msg_counter += 1;
+        let request_id = uuid::Uuid::new_v4().to_string();
         let msg = RoutableMessage {
             channel: "cli".to_string(),
             sender_id: "cli-user".to_string(),
             sender_name: Some("User".to_string()),
             content: input.to_string(),
             message_id: format!("cli-{}", msg_counter),
+            request_id,
         };
 
         if incoming_tx.send(msg).await.is_err() {
@@ -89,6 +91,7 @@ mod tests {
             sender_name: Some("User".to_string()),
             content: "hello".to_string(),
             message_id: "cli-1".to_string(),
+            request_id: "req-001".to_string(),
         };
 
         incoming_tx.send(msg).await.unwrap();
@@ -104,6 +107,7 @@ mod tests {
             recipient_id: "cli-user".to_string(),
             content: "Hi there!".to_string(),
             reply_to: Some("cli-1".to_string()),
+            request_id: "req-001".to_string(),
         };
         response_tx.send(response).await.unwrap();
     }

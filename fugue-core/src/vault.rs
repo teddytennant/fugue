@@ -2,8 +2,11 @@
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Nonce};
+use hmac::Hmac;
+use pbkdf2::pbkdf2;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -12,6 +15,8 @@ use crate::error::{FugueError, Result};
 
 const NONCE_SIZE: usize = 12;
 const KEY_SIZE: usize = 32;
+const SALT_SIZE: usize = 32;
+const PBKDF2_ITERATIONS: u32 = 600_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EncryptedVaultData {
@@ -60,6 +65,26 @@ impl Vault {
         let mut key = [0u8; KEY_SIZE];
         OsRng.fill_bytes(&mut key);
         key
+    }
+
+    /// Generate a random salt for password-based key derivation
+    pub fn generate_salt() -> [u8; SALT_SIZE] {
+        let mut salt = [0u8; SALT_SIZE];
+        OsRng.fill_bytes(&mut salt);
+        salt
+    }
+
+    /// Derive a master key from a password and salt using PBKDF2-HMAC-SHA256
+    pub fn derive_key_from_password(password: &str, salt: &[u8; SALT_SIZE]) -> Result<[u8; KEY_SIZE]> {
+        let mut key = [0u8; KEY_SIZE];
+        pbkdf2::<Hmac<Sha256>>(
+            password.as_bytes(),
+            salt,
+            PBKDF2_ITERATIONS,
+            &mut key,
+        )
+        .map_err(|e| FugueError::Vault(format!("PBKDF2 key derivation failed: {}", e)))?;
+        Ok(key)
     }
 
     /// Set a credential in the vault
@@ -209,21 +234,23 @@ impl Vault {
 
     // --- Keyring backend ---
 
-    fn set_keyring(&self, name: &str, value: &str) -> Result<()> {
-        // Keyring integration - uses the `keyring` crate in production
-        // For now, fall back to encrypted file
-        tracing::warn!("keyring backend not yet implemented, falling back to encrypted file");
-        self.set_encrypted_file(name, value)
+    fn keyring_not_implemented() -> FugueError {
+        FugueError::Vault(
+            "Keyring backend is not yet implemented. Use 'file' or 'encrypted-file' instead."
+                .to_string(),
+        )
     }
 
-    fn get_keyring(&self, name: &str) -> Result<Option<String>> {
-        tracing::warn!("keyring backend not yet implemented, falling back to encrypted file");
-        self.get_encrypted_file(name)
+    fn set_keyring(&self, _name: &str, _value: &str) -> Result<()> {
+        Err(Self::keyring_not_implemented())
     }
 
-    fn remove_keyring(&self, name: &str) -> Result<()> {
-        tracing::warn!("keyring backend not yet implemented, falling back to encrypted file");
-        self.remove_encrypted_file(name)
+    fn get_keyring(&self, _name: &str) -> Result<Option<String>> {
+        Err(Self::keyring_not_implemented())
+    }
+
+    fn remove_keyring(&self, _name: &str) -> Result<()> {
+        Err(Self::keyring_not_implemented())
     }
 }
 
@@ -371,5 +398,91 @@ mod tests {
         vault.set("key", "value2").unwrap();
         let value = vault.get("key").unwrap();
         assert_eq!(value, Some("value2".to_string()));
+    }
+
+    #[test]
+    fn test_derive_key_from_password() {
+        let salt = Vault::generate_salt();
+        let key1 = Vault::derive_key_from_password("my-password", &salt).unwrap();
+        let key2 = Vault::derive_key_from_password("my-password", &salt).unwrap();
+        assert_eq!(key1, key2);
+
+        // Different password produces different key
+        let key3 = Vault::derive_key_from_password("different-password", &salt).unwrap();
+        assert_ne!(key1, key3);
+
+        // Different salt produces different key
+        let salt2 = Vault::generate_salt();
+        let key4 = Vault::derive_key_from_password("my-password", &salt2).unwrap();
+        assert_ne!(key1, key4);
+    }
+
+    #[test]
+    fn test_password_derived_key_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let salt = Vault::generate_salt();
+        let key = Vault::derive_key_from_password("test-password-123", &salt).unwrap();
+
+        let mut vault = Vault::new(
+            VaultBackend::EncryptedFile,
+            Some(dir.path().join("vault.enc")),
+        );
+        vault.init_with_key(key);
+        vault.set("secret", "password-protected-value").unwrap();
+
+        // Re-derive the key from the same password and salt
+        let key2 = Vault::derive_key_from_password("test-password-123", &salt).unwrap();
+        let mut vault2 = Vault::new(
+            VaultBackend::EncryptedFile,
+            Some(dir.path().join("vault.enc")),
+        );
+        vault2.init_with_key(key2);
+
+        let value = vault2.get("secret").unwrap();
+        assert_eq!(value, Some("password-protected-value".to_string()));
+    }
+
+    #[test]
+    fn test_wrong_password_fails() {
+        let dir = TempDir::new().unwrap();
+        let salt = Vault::generate_salt();
+        let key = Vault::derive_key_from_password("correct-password", &salt).unwrap();
+
+        let mut vault = Vault::new(
+            VaultBackend::EncryptedFile,
+            Some(dir.path().join("vault.enc")),
+        );
+        vault.init_with_key(key);
+        vault.set("secret", "value").unwrap();
+
+        // Try with wrong password
+        let wrong_key = Vault::derive_key_from_password("wrong-password", &salt).unwrap();
+        let mut vault2 = Vault::new(
+            VaultBackend::EncryptedFile,
+            Some(dir.path().join("vault.enc")),
+        );
+        vault2.init_with_key(wrong_key);
+
+        let result = vault2.get("secret");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_keyring_backend_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let mut vault = Vault::new(
+            VaultBackend::Keyring,
+            Some(dir.path().join("vault.enc")),
+        );
+        vault.init_with_key(Vault::generate_key());
+
+        let set_err = vault.set("key", "value").unwrap_err().to_string();
+        assert!(set_err.contains("Keyring backend is not yet implemented"));
+
+        let get_err = vault.get("key").unwrap_err().to_string();
+        assert!(get_err.contains("Keyring backend is not yet implemented"));
+
+        let remove_err = vault.remove("key").unwrap_err().to_string();
+        assert!(remove_err.contains("Keyring backend is not yet implemented"));
     }
 }

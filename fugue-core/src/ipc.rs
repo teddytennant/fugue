@@ -28,6 +28,8 @@ pub enum IpcMessage {
         sender_name: Option<String>,
         content: String,
         message_id: String,
+        /// Unique request ID for end-to-end tracing and correlation
+        request_id: String,
     },
 
     /// Outgoing message to a channel
@@ -36,6 +38,8 @@ pub enum IpcMessage {
         recipient_id: String,
         content: String,
         reply_to: Option<String>,
+        /// Unique request ID for end-to-end tracing and correlation
+        request_id: String,
     },
 
     /// Request to invoke an LLM provider
@@ -198,6 +202,7 @@ mod tests {
             sender_name: Some("Alice".to_string()),
             content: "Hello, world!".to_string(),
             message_id: "msg-001".to_string(),
+            request_id: "req-incoming-001".to_string(),
         };
 
         let frame = encode_frame(&msg).unwrap();
@@ -210,12 +215,14 @@ mod tests {
                 sender_name,
                 content,
                 message_id,
+                request_id,
             } => {
                 assert_eq!(channel, "telegram");
                 assert_eq!(sender_id, "12345");
                 assert_eq!(sender_name, Some("Alice".to_string()));
                 assert_eq!(content, "Hello, world!");
                 assert_eq!(message_id, "msg-001");
+                assert_eq!(request_id, "req-incoming-001");
             }
             _ => panic!("unexpected message type"),
         }

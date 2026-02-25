@@ -100,12 +100,14 @@ impl AdapterConnection {
         content: String,
         message_id: String,
     ) -> Result<(), fugue_core::error::FugueError> {
+        let request_id = uuid::Uuid::new_v4().to_string();
         let msg = IpcMessage::IncomingMessage {
             channel: self.adapter_name.clone(),
             sender_id,
             sender_name,
             content,
             message_id,
+            request_id,
         };
         self.send(&msg).await
     }

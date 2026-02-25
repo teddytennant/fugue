@@ -7,6 +7,11 @@ use fugue_core::state::StateStore;
 use fugue_core::vault::Vault;
 use fugue_core::FugueConfig;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+
+/// Maximum number of concurrent IPC connections
+const MAX_CONCURRENT_CONNECTIONS: usize = 32;
 
 pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
     let config_path = config_path
@@ -107,6 +112,7 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
     // Accept IPC connections
     let incoming_tx = router.incoming_sender();
     let mut receiver = router.take_receiver().unwrap();
+    let conn_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
     // Main event loop
     tokio::select! {
@@ -115,7 +121,26 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                 match listener.accept().await {
                     Ok((mut stream, _addr)) => {
                         let tx = incoming_tx.clone();
+                        let sem = conn_semaphore.clone();
+                        let permit = match sem.try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                tracing::warn!(
+                                    "max concurrent IPC connections ({}) reached, rejecting connection",
+                                    MAX_CONCURRENT_CONNECTIONS
+                                );
+                                let _ = ipc::write_message(
+                                    &mut stream,
+                                    &IpcMessage::Error {
+                                        request_id: None,
+                                        message: "too many concurrent connections".to_string(),
+                                    },
+                                ).await;
+                                continue;
+                            }
+                        };
                         tokio::spawn(async move {
+                            let _permit = permit; // held until task ends
                             tracing::info!("new IPC connection");
                             loop {
                                 match ipc::read_message(&mut stream).await {
@@ -137,6 +162,12 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                                             }
                                             other => {
                                                 if let Some(routable) = Router::ipc_to_routable(&other) {
+                                                    tracing::info!(
+                                                        request_id = %routable.request_id,
+                                                        "routing message from {} on {}",
+                                                        routable.sender_id,
+                                                        routable.channel,
+                                                    );
                                                     let _ = tx.send(routable).await;
                                                 }
                                             }
@@ -159,6 +190,7 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
         _ = async {
             while let Some(msg) = receiver.recv().await {
                 tracing::info!(
+                    request_id = %msg.request_id,
                     "message from {} on {}: {}",
                     msg.sender_id,
                     msg.channel,
@@ -177,19 +209,28 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                     let messages = router.build_llm_messages(&history);
                     match provider_manager.chat(provider_name, &messages).await {
                         Ok(response) => {
-                            tracing::info!("LLM response: {}", &response.content[..response.content.len().min(100)]);
+                            tracing::info!(
+                                request_id = %msg.request_id,
+                                "LLM response: {}",
+                                &response.content[..response.content.len().min(100)]
+                            );
                             let route_response = RouteResponse {
                                 channel: msg.channel,
                                 recipient_id: msg.sender_id,
                                 content: response.content,
                                 reply_to: Some(msg.message_id),
+                                request_id: msg.request_id,
                             };
                             if let Err(e) = router.send_response(route_response).await {
                                 tracing::error!("failed to route response: {}", e);
                             }
                         }
                         Err(e) => {
-                            tracing::error!("LLM error: {}", e);
+                            tracing::error!(
+                                request_id = %msg.request_id,
+                                "LLM error: {}",
+                                e
+                            );
                         }
                     }
                 }

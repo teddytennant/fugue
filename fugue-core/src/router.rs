@@ -14,6 +14,8 @@ pub struct RoutableMessage {
     pub sender_name: Option<String>,
     pub content: String,
     pub message_id: String,
+    /// Unique request ID for end-to-end tracing and correlation
+    pub request_id: String,
 }
 
 /// Response to be sent back through a channel
@@ -23,6 +25,8 @@ pub struct RouteResponse {
     pub recipient_id: String,
     pub content: String,
     pub reply_to: Option<String>,
+    /// Unique request ID for end-to-end tracing and correlation
+    pub request_id: String,
 }
 
 /// Channel handle for sending responses back to adapters
@@ -134,12 +138,14 @@ impl Router {
                 sender_name,
                 content,
                 message_id,
+                request_id,
             } => Some(RoutableMessage {
                 channel: channel.clone(),
                 sender_id: sender_id.clone(),
                 sender_name: sender_name.clone(),
                 content: content.clone(),
                 message_id: message_id.clone(),
+                request_id: request_id.clone(),
             }),
             _ => None,
         }
@@ -152,6 +158,7 @@ impl Router {
             recipient_id: response.recipient_id.clone(),
             content: response.content.clone(),
             reply_to: response.reply_to.clone(),
+            request_id: response.request_id.clone(),
         }
     }
 }
@@ -202,6 +209,7 @@ mod tests {
             recipient_id: "user1".to_string(),
             content: "Hello!".to_string(),
             reply_to: None,
+            request_id: "req-001".to_string(),
         };
 
         router.send_response(response).await.unwrap();
@@ -209,6 +217,7 @@ mod tests {
         let received = rx.recv().await.unwrap();
         assert_eq!(received.content, "Hello!");
         assert_eq!(received.recipient_id, "user1");
+        assert_eq!(received.request_id, "req-001");
     }
 
     #[tokio::test]
@@ -220,6 +229,7 @@ mod tests {
             recipient_id: "user1".to_string(),
             content: "Hello!".to_string(),
             reply_to: None,
+            request_id: "req-001".to_string(),
         };
 
         let result = router.send_response(response).await;
@@ -238,6 +248,7 @@ mod tests {
             sender_name: Some("Alice".to_string()),
             content: "Hello!".to_string(),
             message_id: "msg-1".to_string(),
+            request_id: "req-001".to_string(),
         };
 
         sender.send(msg).await.unwrap();
@@ -245,6 +256,7 @@ mod tests {
         let received = receiver.recv().await.unwrap();
         assert_eq!(received.content, "Hello!");
         assert_eq!(received.channel, "cli");
+        assert_eq!(received.request_id, "req-001");
     }
 
     #[test]
@@ -285,12 +297,14 @@ mod tests {
             sender_name: Some("Bob".to_string()),
             content: "Hello".to_string(),
             message_id: "msg-1".to_string(),
+            request_id: "req-001".to_string(),
         };
 
         let routable = Router::ipc_to_routable(&ipc_msg).unwrap();
         assert_eq!(routable.channel, "telegram");
         assert_eq!(routable.sender_id, "123");
         assert_eq!(routable.content, "Hello");
+        assert_eq!(routable.request_id, "req-001");
     }
 
     #[test]
@@ -306,6 +320,7 @@ mod tests {
             recipient_id: "user1".to_string(),
             content: "Response".to_string(),
             reply_to: Some("msg-1".to_string()),
+            request_id: "req-001".to_string(),
         };
 
         let ipc = Router::response_to_ipc(&response);
@@ -315,11 +330,13 @@ mod tests {
                 recipient_id,
                 content,
                 reply_to,
+                request_id,
             } => {
                 assert_eq!(channel, "cli");
                 assert_eq!(recipient_id, "user1");
                 assert_eq!(content, "Response");
                 assert_eq!(reply_to, Some("msg-1".to_string()));
+                assert_eq!(request_id, "req-001");
             }
             _ => panic!("unexpected message type"),
         }
