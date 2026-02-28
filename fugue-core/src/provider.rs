@@ -398,4 +398,276 @@ mod tests {
         assert!(msg.contains("400"));
         assert!(msg.contains("request failed"));
     }
+
+    #[test]
+    fn test_classify_http_error_forbidden() {
+        let err = classify_http_error(
+            reqwest::StatusCode::FORBIDDEN,
+            "Anthropic",
+            "forbidden",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("403"));
+        assert!(msg.contains("forbidden"));
+        assert!(msg.contains("Anthropic"));
+    }
+
+    #[test]
+    fn test_classify_http_error_not_found() {
+        let err = classify_http_error(
+            reqwest::StatusCode::NOT_FOUND,
+            "Ollama",
+            "model not found",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("404"));
+        assert!(msg.contains("not found"));
+    }
+
+    #[test]
+    fn test_classify_http_error_bad_gateway() {
+        let err = classify_http_error(
+            reqwest::StatusCode::BAD_GATEWAY,
+            "OpenAI",
+            "",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("502"));
+        assert!(msg.contains("bad gateway"));
+    }
+
+    #[test]
+    fn test_classify_http_error_service_unavailable() {
+        let err = classify_http_error(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            "Anthropic",
+            "overloaded",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("503"));
+        assert!(msg.contains("service unavailable"));
+    }
+
+    #[test]
+    fn test_register_multiple_providers() {
+        let mut pm = ProviderManager::new();
+        let ollama = ProviderConfig {
+            provider_type: ProviderType::Ollama,
+            base_url: None,
+            model: None,
+            credential: None,
+            extra: Default::default(),
+        };
+        let anthropic = ProviderConfig {
+            provider_type: ProviderType::Anthropic,
+            base_url: None,
+            model: None,
+            credential: None,
+            extra: Default::default(),
+        };
+
+        pm.register("ollama".to_string(), ollama, None).unwrap();
+        pm.register("anthropic".to_string(), anthropic, None).unwrap();
+
+        let providers = pm.list_providers();
+        assert_eq!(providers.len(), 2);
+        assert!(providers.contains(&"ollama"));
+        assert!(providers.contains(&"anthropic"));
+    }
+
+    #[test]
+    fn test_register_provider_with_credential_but_no_vault() {
+        let mut pm = ProviderManager::new();
+        let config = ProviderConfig {
+            provider_type: ProviderType::Anthropic,
+            base_url: None,
+            model: None,
+            credential: Some("vault:my-key".to_string()),
+            extra: Default::default(),
+        };
+
+        let result = pm.register("anthropic".to_string(), config, None);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("no vault is configured"));
+    }
+
+    #[test]
+    fn test_register_provider_with_vault_credential() {
+        use crate::config::VaultBackend;
+        use crate::vault::Vault;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut vault = Vault::new(
+            VaultBackend::EncryptedFile,
+            Some(dir.path().join("vault.enc")),
+        );
+        vault.init_with_key(Vault::generate_key());
+        vault.set("anthropic-key", "sk-test-key").unwrap();
+
+        let mut pm = ProviderManager::new();
+        let config = ProviderConfig {
+            provider_type: ProviderType::Anthropic,
+            base_url: None,
+            model: None,
+            credential: Some("vault:anthropic-key".to_string()),
+            extra: Default::default(),
+        };
+
+        pm.register("anthropic".to_string(), config, Some(&vault)).unwrap();
+        assert_eq!(pm.list_providers(), vec!["anthropic"]);
+    }
+
+    #[test]
+    fn test_register_provider_with_missing_vault_credential() {
+        use crate::config::VaultBackend;
+        use crate::vault::Vault;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut vault = Vault::new(
+            VaultBackend::EncryptedFile,
+            Some(dir.path().join("vault.enc")),
+        );
+        vault.init_with_key(Vault::generate_key());
+
+        let mut pm = ProviderManager::new();
+        let config = ProviderConfig {
+            provider_type: ProviderType::Anthropic,
+            base_url: None,
+            model: None,
+            credential: Some("vault:nonexistent".to_string()),
+            extra: Default::default(),
+        };
+
+        let result = pm.register("anthropic".to_string(), config, Some(&vault));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn test_llm_response_serialization() {
+        let resp = LlmResponse {
+            content: "Hello!".to_string(),
+            model: "gpt-4o".to_string(),
+            usage: Some(Usage {
+                prompt_tokens: Some(10),
+                completion_tokens: Some(20),
+                total_tokens: Some(30),
+            }),
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        let deserialized: LlmResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.content, "Hello!");
+        assert_eq!(deserialized.model, "gpt-4o");
+        let usage = deserialized.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, Some(10));
+        assert_eq!(usage.completion_tokens, Some(20));
+        assert_eq!(usage.total_tokens, Some(30));
+    }
+
+    #[test]
+    fn test_llm_response_without_usage() {
+        let resp = LlmResponse {
+            content: "Hi".to_string(),
+            model: "llama3.2".to_string(),
+            usage: None,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        let deserialized: LlmResponse = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.usage.is_none());
+    }
+
+    #[test]
+    fn test_provider_manager_default() {
+        let pm = ProviderManager::default();
+        assert!(pm.list_providers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_chat_dispatches_to_correct_provider() {
+        // Register multiple providers, verify the right one is selected
+        let mut pm = ProviderManager::new();
+        let ollama = ProviderConfig {
+            provider_type: ProviderType::Ollama,
+            base_url: Some("http://127.0.0.1:1".to_string()), // unreachable
+            model: Some("test".to_string()),
+            credential: None,
+            extra: Default::default(),
+        };
+        let openai = ProviderConfig {
+            provider_type: ProviderType::OpenAI,
+            base_url: Some("http://127.0.0.1:2".to_string()), // unreachable
+            model: Some("test".to_string()),
+            credential: None,
+            extra: Default::default(),
+        };
+
+        pm.register("ollama".to_string(), ollama, None).unwrap();
+        pm.register("openai".to_string(), openai, None).unwrap();
+
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "test".to_string(),
+        }];
+
+        // Both should fail with connection errors (not "not found"),
+        // proving they dispatched to the right provider
+        let result = pm.chat("ollama", &messages).await;
+        assert!(result.is_err());
+        assert!(!result.unwrap_err().to_string().contains("not found"));
+
+        let result = pm.chat("openai", &messages).await;
+        assert!(result.is_err());
+        // OpenAI requires an API key
+        assert!(result.unwrap_err().to_string().contains("API key"));
+    }
+
+    #[tokio::test]
+    async fn test_anthropic_requires_api_key() {
+        let mut pm = ProviderManager::new();
+        let config = ProviderConfig {
+            provider_type: ProviderType::Anthropic,
+            base_url: None,
+            model: None,
+            credential: None,
+            extra: Default::default(),
+        };
+
+        pm.register("anthropic".to_string(), config, None).unwrap();
+
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "test".to_string(),
+        }];
+
+        let result = pm.chat("anthropic", &messages).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("API key"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_requires_api_key() {
+        let mut pm = ProviderManager::new();
+        let config = ProviderConfig {
+            provider_type: ProviderType::OpenAI,
+            base_url: None,
+            model: None,
+            credential: None,
+            extra: Default::default(),
+        };
+
+        pm.register("openai".to_string(), config, None).unwrap();
+
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "test".to_string(),
+        }];
+
+        let result = pm.chat("openai", &messages).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("API key"));
+    }
 }

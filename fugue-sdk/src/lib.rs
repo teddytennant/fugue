@@ -176,4 +176,186 @@ mod tests {
             "credential:read:my-key"
         );
     }
+
+    #[test]
+    fn test_all_capability_display_variants() {
+        let cases = vec![
+            (PluginCapability::FsRead(None), "fs:read"),
+            (PluginCapability::FsRead(Some("/tmp".to_string())), "fs:read:/tmp"),
+            (PluginCapability::FsWrite(None), "fs:write"),
+            (PluginCapability::FsWrite(Some("/var".to_string())), "fs:write:/var"),
+            (PluginCapability::NetOutbound(None), "net:outbound"),
+            (PluginCapability::LlmCall, "llm:call"),
+            (PluginCapability::StateRead, "state:read"),
+            (PluginCapability::StateWrite, "state:write"),
+            (PluginCapability::ExecSubprocess, "exec:subprocess"),
+        ];
+
+        for (cap, expected) in cases {
+            assert_eq!(cap.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_tool_description_serialization() {
+        let desc = ToolDescription {
+            name: "search".to_string(),
+            description: "Search the web".to_string(),
+        };
+
+        let json = serde_json::to_string(&desc).unwrap();
+        let deserialized: ToolDescription = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "search");
+        assert_eq!(deserialized.description, "Search the web");
+    }
+
+    #[test]
+    fn test_tool_call_serialization() {
+        let call = ToolCall {
+            name: "echo".to_string(),
+            arguments: serde_json::json!({"message": "hello", "count": 3}),
+        };
+
+        let json = serde_json::to_string(&call).unwrap();
+        let deserialized: ToolCall = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "echo");
+        assert_eq!(deserialized.arguments["message"], "hello");
+        assert_eq!(deserialized.arguments["count"], 3);
+    }
+
+    #[test]
+    fn test_tool_result_serialization() {
+        let result = ToolResult::ok("success output");
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: ToolResult = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.success);
+        assert_eq!(deserialized.output, "success output");
+        assert!(deserialized.error.is_none());
+    }
+
+    #[test]
+    fn test_tool_result_err_serialization() {
+        let result = ToolResult::err("failure reason");
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: ToolResult = serde_json::from_str(&json).unwrap();
+        assert!(!deserialized.success);
+        assert_eq!(deserialized.output, "");
+        assert_eq!(deserialized.error, Some("failure reason".to_string()));
+    }
+
+    #[test]
+    fn test_echo_tool_missing_argument() {
+        let mut tool = EchoTool;
+        let call = ToolCall {
+            name: "echo".to_string(),
+            arguments: serde_json::json!({}),
+        };
+
+        let result = tool.execute(call);
+        assert!(result.success);
+        assert_eq!(result.output, "(no message)");
+    }
+
+    #[test]
+    fn test_echo_tool_init() {
+        let mut tool = EchoTool;
+        let result = tool.init();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_echo_tool_schema() {
+        let tool = EchoTool;
+        let schema = tool.schema();
+
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["message"].is_object());
+        assert!(schema["required"].as_array().unwrap().contains(&serde_json::json!("message")));
+    }
+
+    // A second tool implementation for testing the trait with error handling
+    struct FailTool;
+
+    impl FugueTool for FailTool {
+        fn init(&mut self) -> Result<(), String> {
+            Err("init failed".to_string())
+        }
+
+        fn describe(&self) -> ToolDescription {
+            ToolDescription {
+                name: "fail".to_string(),
+                description: "Always fails".to_string(),
+            }
+        }
+
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {}
+            })
+        }
+
+        fn execute(&mut self, _call: ToolCall) -> ToolResult {
+            ToolResult::err("execution failed")
+        }
+    }
+
+    #[test]
+    fn test_fail_tool_init() {
+        let mut tool = FailTool;
+        let result = tool.init();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "init failed");
+    }
+
+    #[test]
+    fn test_fail_tool_execute() {
+        let mut tool = FailTool;
+        let call = ToolCall {
+            name: "fail".to_string(),
+            arguments: serde_json::json!({}),
+        };
+
+        let result = tool.execute(call);
+        assert!(!result.success);
+        assert_eq!(result.error, Some("execution failed".to_string()));
+    }
+
+    #[test]
+    fn test_tool_call_with_nested_arguments() {
+        let call = ToolCall {
+            name: "complex".to_string(),
+            arguments: serde_json::json!({
+                "query": "test",
+                "options": {
+                    "limit": 10,
+                    "offset": 0
+                },
+                "tags": ["a", "b", "c"]
+            }),
+        };
+
+        let json = serde_json::to_string(&call).unwrap();
+        let deserialized: ToolCall = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.arguments["options"]["limit"], 10);
+        assert_eq!(deserialized.arguments["tags"][1], "b");
+    }
+
+    #[test]
+    fn test_capability_equality() {
+        assert_eq!(PluginCapability::LlmCall, PluginCapability::LlmCall);
+        assert_ne!(PluginCapability::LlmCall, PluginCapability::StateRead);
+        assert_eq!(
+            PluginCapability::FsRead(Some("/tmp".to_string())),
+            PluginCapability::FsRead(Some("/tmp".to_string()))
+        );
+        assert_ne!(
+            PluginCapability::FsRead(Some("/tmp".to_string())),
+            PluginCapability::FsRead(Some("/var".to_string()))
+        );
+        assert_ne!(
+            PluginCapability::FsRead(None),
+            PluginCapability::FsRead(Some("/tmp".to_string()))
+        );
+    }
 }

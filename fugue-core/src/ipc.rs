@@ -330,4 +330,283 @@ mod tests {
             _ => panic!("unexpected message type"),
         }
     }
+
+    #[test]
+    fn test_encode_decode_outgoing_message() {
+        let msg = IpcMessage::OutgoingMessage {
+            channel: "telegram".to_string(),
+            recipient_id: "user-456".to_string(),
+            content: "Hello back!".to_string(),
+            reply_to: Some("msg-001".to_string()),
+            request_id: "req-out-001".to_string(),
+        };
+
+        let frame = encode_frame(&msg).unwrap();
+        let (decoded, consumed) = decode_frame(&frame).unwrap();
+        assert_eq!(consumed, frame.len());
+
+        match decoded {
+            IpcMessage::OutgoingMessage {
+                channel,
+                recipient_id,
+                content,
+                reply_to,
+                request_id,
+            } => {
+                assert_eq!(channel, "telegram");
+                assert_eq!(recipient_id, "user-456");
+                assert_eq!(content, "Hello back!");
+                assert_eq!(reply_to, Some("msg-001".to_string()));
+                assert_eq!(request_id, "req-out-001");
+            }
+            _ => panic!("unexpected message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_outgoing_message_no_reply() {
+        let msg = IpcMessage::OutgoingMessage {
+            channel: "cli".to_string(),
+            recipient_id: "user".to_string(),
+            content: "Hi".to_string(),
+            reply_to: None,
+            request_id: "req-002".to_string(),
+        };
+
+        let frame = encode_frame(&msg).unwrap();
+        let (decoded, _) = decode_frame(&frame).unwrap();
+
+        match decoded {
+            IpcMessage::OutgoingMessage { reply_to, .. } => {
+                assert_eq!(reply_to, None);
+            }
+            _ => panic!("unexpected message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_llm_response() {
+        let msg = IpcMessage::LlmResponse {
+            request_id: "req-llm-001".to_string(),
+            content: "The answer is 42.".to_string(),
+        };
+
+        let frame = encode_frame(&msg).unwrap();
+        let (decoded, _) = decode_frame(&frame).unwrap();
+
+        match decoded {
+            IpcMessage::LlmResponse {
+                request_id,
+                content,
+            } => {
+                assert_eq!(request_id, "req-llm-001");
+                assert_eq!(content, "The answer is 42.");
+            }
+            _ => panic!("unexpected message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_error_with_request_id() {
+        let msg = IpcMessage::Error {
+            request_id: Some("req-err-001".to_string()),
+            message: "something went wrong".to_string(),
+        };
+
+        let frame = encode_frame(&msg).unwrap();
+        let (decoded, _) = decode_frame(&frame).unwrap();
+
+        match decoded {
+            IpcMessage::Error {
+                request_id,
+                message,
+            } => {
+                assert_eq!(request_id, Some("req-err-001".to_string()));
+                assert_eq!(message, "something went wrong");
+            }
+            _ => panic!("unexpected message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_error_without_request_id() {
+        let msg = IpcMessage::Error {
+            request_id: None,
+            message: "general error".to_string(),
+        };
+
+        let frame = encode_frame(&msg).unwrap();
+        let (decoded, _) = decode_frame(&frame).unwrap();
+
+        match decoded {
+            IpcMessage::Error {
+                request_id,
+                message,
+            } => {
+                assert_eq!(request_id, None);
+                assert_eq!(message, "general error");
+            }
+            _ => panic!("unexpected message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_register_ack() {
+        let msg = IpcMessage::RegisterAck {
+            session_id: "sess-abc-123".to_string(),
+        };
+
+        let frame = encode_frame(&msg).unwrap();
+        let (decoded, _) = decode_frame(&frame).unwrap();
+
+        match decoded {
+            IpcMessage::RegisterAck { session_id } => {
+                assert_eq!(session_id, "sess-abc-123");
+            }
+            _ => panic!("unexpected message type"),
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_shutdown() {
+        let msg = IpcMessage::Shutdown;
+        let frame = encode_frame(&msg).unwrap();
+        let (decoded, _) = decode_frame(&frame).unwrap();
+        assert!(matches!(decoded, IpcMessage::Shutdown));
+    }
+
+    #[test]
+    fn test_encode_decode_incoming_no_sender_name() {
+        let msg = IpcMessage::IncomingMessage {
+            channel: "cli".to_string(),
+            sender_id: "anon".to_string(),
+            sender_name: None,
+            content: "anonymous message".to_string(),
+            message_id: "msg-anon".to_string(),
+            request_id: "req-anon".to_string(),
+        };
+
+        let frame = encode_frame(&msg).unwrap();
+        let (decoded, _) = decode_frame(&frame).unwrap();
+
+        match decoded {
+            IpcMessage::IncomingMessage { sender_name, .. } => {
+                assert_eq!(sender_name, None);
+            }
+            _ => panic!("unexpected message type"),
+        }
+    }
+
+    #[test]
+    fn test_decode_frame_empty_input() {
+        let result = decode_frame(&[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("incomplete frame header"));
+    }
+
+    #[test]
+    fn test_decode_frame_exactly_four_bytes_zero_length() {
+        // A frame with length 0 should try to decode an empty msgpack payload
+        let data = [0u8, 0, 0, 0];
+        let result = decode_frame(&data);
+        // Zero-length payload is not valid msgpack
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_multiple_frames_in_buffer() {
+        let msg1 = IpcMessage::Ping;
+        let msg2 = IpcMessage::Pong;
+
+        let frame1 = encode_frame(&msg1).unwrap();
+        let frame2 = encode_frame(&msg2).unwrap();
+
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&frame1);
+        buffer.extend_from_slice(&frame2);
+
+        let (decoded1, consumed1) = decode_frame(&buffer).unwrap();
+        assert!(matches!(decoded1, IpcMessage::Ping));
+
+        let (decoded2, consumed2) = decode_frame(&buffer[consumed1..]).unwrap();
+        assert!(matches!(decoded2, IpcMessage::Pong));
+        assert_eq!(consumed1 + consumed2, buffer.len());
+    }
+
+    #[test]
+    fn test_encode_decode_unicode_content() {
+        let msg = IpcMessage::IncomingMessage {
+            channel: "cli".to_string(),
+            sender_id: "user".to_string(),
+            sender_name: Some("\u{1F600}".to_string()),
+            content: "\u{4F60}\u{597D}\u{4E16}\u{754C}".to_string(),
+            message_id: "msg-unicode".to_string(),
+            request_id: "req-unicode".to_string(),
+        };
+
+        let frame = encode_frame(&msg).unwrap();
+        let (decoded, _) = decode_frame(&frame).unwrap();
+
+        match decoded {
+            IpcMessage::IncomingMessage {
+                sender_name,
+                content,
+                ..
+            } => {
+                assert_eq!(sender_name, Some("\u{1F600}".to_string()));
+                assert_eq!(content, "\u{4F60}\u{597D}\u{4E16}\u{754C}");
+            }
+            _ => panic!("unexpected message type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_async_multiple_messages() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sock_path = dir.path().join("test.sock");
+
+        let listener = create_listener(&sock_path).await.unwrap();
+
+        let sock_path_clone = sock_path.clone();
+        let writer = tokio::spawn(async move {
+            let mut stream = UnixStream::connect(&sock_path_clone).await.unwrap();
+            write_message(&mut stream, &IpcMessage::Ping).await.unwrap();
+            write_message(&mut stream, &IpcMessage::Pong).await.unwrap();
+            write_message(&mut stream, &IpcMessage::Shutdown).await.unwrap();
+        });
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+
+        let msg1 = read_message(&mut stream).await.unwrap();
+        assert!(matches!(msg1, IpcMessage::Ping));
+
+        let msg2 = read_message(&mut stream).await.unwrap();
+        assert!(matches!(msg2, IpcMessage::Pong));
+
+        let msg3 = read_message(&mut stream).await.unwrap();
+        assert!(matches!(msg3, IpcMessage::Shutdown));
+
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_listener_removes_stale_socket() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sock_path = dir.path().join("test.sock");
+
+        // Create a stale socket file
+        std::fs::write(&sock_path, "stale").unwrap();
+
+        // Should succeed by removing the stale file
+        let _listener = create_listener(&sock_path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_listener_creates_parent_dirs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sock_path = dir.path().join("subdir").join("nested").join("test.sock");
+
+        let _listener = create_listener(&sock_path).await.unwrap();
+        assert!(sock_path.exists());
+    }
 }

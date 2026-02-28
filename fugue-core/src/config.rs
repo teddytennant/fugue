@@ -440,4 +440,216 @@ bind_address = "127.0.0.1"
         let result = FugueConfig::parse(toml_str);
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_ipv6_localhost_ok_without_risk_flag() {
+        let toml_str = r#"
+[network]
+http_enabled = true
+bind_address = "::1"
+"#;
+        let result = FugueConfig::parse(toml_str);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_http_disabled_non_localhost_ok() {
+        let toml_str = r#"
+[network]
+http_enabled = false
+bind_address = "0.0.0.0"
+"#;
+        let result = FugueConfig::parse(toml_str);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_rejects_key_prefix_credential() {
+        let toml_str = r#"
+[providers.bad]
+type = "openai"
+credential = "key-abc123"
+"#;
+        let result = FugueConfig::parse(toml_str);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("raw API key"));
+    }
+
+    #[test]
+    fn test_rejects_long_credential() {
+        let long_cred = "a".repeat(81);
+        let toml_str = format!(
+            r#"
+[providers.bad]
+type = "openai"
+credential = "{}"
+"#,
+            long_cred
+        );
+        let result = FugueConfig::parse(&toml_str);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("raw API key"));
+    }
+
+    #[test]
+    fn test_allows_vault_reference_credential() {
+        let toml_str = r#"
+[providers.good]
+type = "anthropic"
+credential = "vault:my-api-key"
+"#;
+        let result = FugueConfig::parse(toml_str);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_malformed_toml() {
+        let toml_str = "this is not [valid toml";
+        let result = FugueConfig::parse(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_provider_type() {
+        let toml_str = r#"
+[providers.bad]
+type = "grok"
+"#;
+        let result = FugueConfig::parse(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_channel_type() {
+        let toml_str = r#"
+[channels.bad]
+type = "sms"
+"#;
+        let result = FugueConfig::parse(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_all_valid_log_levels() {
+        for level in &["trace", "debug", "info", "warn", "error"] {
+            let toml_str = format!(
+                r#"
+[core]
+log_level = "{}"
+"#,
+                level
+            );
+            let result = FugueConfig::parse(&toml_str);
+            assert!(result.is_ok(), "log level '{}' should be valid", level);
+        }
+    }
+
+    #[test]
+    fn test_plugin_system_defaults() {
+        let config = FugueConfig::default_config();
+        assert_eq!(config.plugins.memory_limit_bytes, 64 * 1024 * 1024);
+        assert_eq!(config.plugins.fuel_limit, 1_000_000_000);
+        assert_eq!(config.plugins.execution_timeout_ms, 30_000);
+    }
+
+    #[test]
+    fn test_vault_config_defaults() {
+        let config = FugueConfig::default_config();
+        assert_eq!(config.vault.backend, VaultBackend::EncryptedFile);
+        assert!(config.vault.encrypted_file_path.is_none());
+    }
+
+    #[test]
+    fn test_network_default_port() {
+        let config = FugueConfig::default_config();
+        assert_eq!(config.network.port, 8432);
+    }
+
+    #[test]
+    fn test_multiple_providers_one_bad_credential() {
+        let toml_str = r#"
+[providers.good]
+type = "ollama"
+
+[providers.bad]
+type = "anthropic"
+credential = "sk-ant-real-key-here"
+"#;
+        let result = FugueConfig::parse(toml_str);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("bad"));
+    }
+
+    #[test]
+    fn test_channel_with_allowed_ids() {
+        let toml_str = r#"
+[channels.telegram]
+type = "telegram"
+credential = "vault:tg-token"
+allowed_ids = ["123", "456", "789"]
+"#;
+        let config = FugueConfig::parse(toml_str).unwrap();
+        let tg = &config.channels["telegram"];
+        assert_eq!(tg.allowed_ids, vec!["123", "456", "789"]);
+    }
+
+    #[test]
+    fn test_config_load_nonexistent_file() {
+        let result = FugueConfig::load(std::path::Path::new("/nonexistent/config.toml"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_load_from_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[core]\nlog_level = \"debug\"\n").unwrap();
+
+        let config = FugueConfig::load(&path).unwrap();
+        assert_eq!(config.core.log_level, "debug");
+    }
+
+    #[test]
+    fn test_all_channel_types() {
+        for (name, type_str) in &[
+            ("cli", "cli"),
+            ("telegram", "telegram"),
+            ("signal", "signal"),
+            ("discord", "discord"),
+            ("matrix", "matrix"),
+            ("slack", "slack"),
+            ("whatsapp", "whatsapp"),
+            ("irc", "irc"),
+        ] {
+            let toml_str = format!(
+                r#"
+[channels.{}]
+type = "{}"
+"#,
+                name, type_str
+            );
+            let result = FugueConfig::parse(&toml_str);
+            assert!(result.is_ok(), "channel type '{}' should be valid", type_str);
+        }
+    }
+
+    #[test]
+    fn test_provider_extra_fields() {
+        let toml_str = r#"
+[providers.ollama]
+type = "ollama"
+base_url = "http://localhost:11434"
+
+[providers.ollama.extra]
+temperature = 0.7
+top_p = 0.9
+"#;
+        let config = FugueConfig::parse(toml_str).unwrap();
+        let ollama = &config.providers["ollama"];
+        assert!(ollama.extra.contains_key("temperature"));
+        assert!(ollama.extra.contains_key("top_p"));
+    }
 }

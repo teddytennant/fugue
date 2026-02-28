@@ -432,4 +432,220 @@ mod tests {
             assert_eq!(events.len(), 1);
         }
     }
+
+    #[test]
+    fn test_all_event_types() {
+        let log = AuditLog::open_in_memory().unwrap();
+
+        let event_types = vec![
+            AuditEventType::PluginInstalled,
+            AuditEventType::PluginRemoved,
+            AuditEventType::PluginApproved,
+            AuditEventType::PluginRevoked,
+            AuditEventType::PluginExecuted,
+            AuditEventType::PluginBinaryChanged,
+            AuditEventType::CapabilityGranted,
+            AuditEventType::CapabilityDenied,
+            AuditEventType::CredentialAccessed,
+            AuditEventType::CredentialSet,
+            AuditEventType::CredentialRemoved,
+            AuditEventType::AdapterConnected,
+            AuditEventType::AdapterDisconnected,
+            AuditEventType::ConfigLoaded,
+            AuditEventType::ConfigChanged,
+            AuditEventType::NetworkBindAttempt,
+            AuditEventType::AuthenticationFailure,
+            AuditEventType::ServiceStarted,
+            AuditEventType::ServiceStopped,
+        ];
+
+        for et in &event_types {
+            log.append(&event(
+                et.clone(),
+                "test",
+                "testing all event types",
+                AuditSeverity::Info,
+            ))
+            .unwrap();
+        }
+
+        assert_eq!(log.count().unwrap(), event_types.len());
+
+        // Each event type should be queryable individually
+        for et in &event_types {
+            let events = log.query_by_type(et, 10).unwrap();
+            assert_eq!(events.len(), 1, "event type {:?} should have 1 entry", et);
+        }
+    }
+
+    #[test]
+    fn test_query_recent_limit() {
+        let log = AuditLog::open_in_memory().unwrap();
+
+        for i in 0..10 {
+            log.append(&event(
+                AuditEventType::PluginExecuted,
+                format!("plugin-{}", i),
+                "executed",
+                AuditSeverity::Info,
+            ))
+            .unwrap();
+        }
+
+        let events = log.query_recent(3).unwrap();
+        assert_eq!(events.len(), 3);
+        // Should return the 3 most recent in chronological order
+        assert_eq!(events[0].subject, "plugin-7");
+        assert_eq!(events[1].subject, "plugin-8");
+        assert_eq!(events[2].subject, "plugin-9");
+    }
+
+    #[test]
+    fn test_query_recent_empty_log() {
+        let log = AuditLog::open_in_memory().unwrap();
+        let events = log.query_recent(10).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_query_by_type_empty_result() {
+        let log = AuditLog::open_in_memory().unwrap();
+
+        log.append(&event(
+            AuditEventType::ServiceStarted,
+            "core",
+            "started",
+            AuditSeverity::Info,
+        ))
+        .unwrap();
+
+        let events = log
+            .query_by_type(&AuditEventType::PluginInstalled, 10)
+            .unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_all_severity_levels() {
+        let log = AuditLog::open_in_memory().unwrap();
+
+        log.append(&event(
+            AuditEventType::ServiceStarted,
+            "core",
+            "info event",
+            AuditSeverity::Info,
+        ))
+        .unwrap();
+        log.append(&event(
+            AuditEventType::CapabilityDenied,
+            "plugin",
+            "warning event",
+            AuditSeverity::Warning,
+        ))
+        .unwrap();
+        log.append(&event(
+            AuditEventType::PluginBinaryChanged,
+            "plugin",
+            "critical event",
+            AuditSeverity::Critical,
+        ))
+        .unwrap();
+
+        let info = log.query_by_severity(AuditSeverity::Info, 10).unwrap();
+        assert_eq!(info.len(), 1);
+
+        let warn = log.query_by_severity(AuditSeverity::Warning, 10).unwrap();
+        assert_eq!(warn.len(), 1);
+
+        let crit = log.query_by_severity(AuditSeverity::Critical, 10).unwrap();
+        assert_eq!(crit.len(), 1);
+    }
+
+    #[test]
+    fn test_event_has_timestamp() {
+        let log = AuditLog::open_in_memory().unwrap();
+
+        let before = chrono::Utc::now();
+        log.append(&event(
+            AuditEventType::ServiceStarted,
+            "core",
+            "started",
+            AuditSeverity::Info,
+        ))
+        .unwrap();
+        let after = chrono::Utc::now();
+
+        let events = log.query_recent(1).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].timestamp >= before);
+        assert!(events[0].timestamp <= after);
+    }
+
+    #[test]
+    fn test_event_id_assigned() {
+        let log = AuditLog::open_in_memory().unwrap();
+
+        let id = log
+            .append(&event(
+                AuditEventType::ServiceStarted,
+                "core",
+                "started",
+                AuditSeverity::Info,
+            ))
+            .unwrap();
+        assert!(id > 0);
+
+        let events = log.query_recent(1).unwrap();
+        assert_eq!(events[0].id, Some(id));
+    }
+
+    #[test]
+    fn test_event_helper_function() {
+        let evt = event(
+            AuditEventType::PluginInstalled,
+            "test-plugin",
+            "installed via CLI",
+            AuditSeverity::Info,
+        );
+
+        assert_eq!(evt.event_type, AuditEventType::PluginInstalled);
+        assert_eq!(evt.subject, "test-plugin");
+        assert_eq!(evt.detail, "installed via CLI");
+        assert_eq!(evt.severity, AuditSeverity::Info);
+        assert!(evt.id.is_none()); // Not yet persisted
+    }
+
+    #[test]
+    fn test_event_detail_preserved() {
+        let log = AuditLog::open_in_memory().unwrap();
+
+        let long_detail = "x".repeat(10_000);
+        log.append(&event(
+            AuditEventType::PluginExecuted,
+            "plugin",
+            long_detail.clone(),
+            AuditSeverity::Info,
+        ))
+        .unwrap();
+
+        let events = log.query_recent(1).unwrap();
+        assert_eq!(events[0].detail, long_detail);
+    }
+
+    #[test]
+    fn test_open_creates_parent_dirs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("sub").join("dir").join("audit.db");
+
+        let log = AuditLog::open(&db_path).unwrap();
+        log.append(&event(
+            AuditEventType::ServiceStarted,
+            "core",
+            "started",
+            AuditSeverity::Info,
+        ))
+        .unwrap();
+
+        assert!(db_path.exists());
+    }
 }

@@ -322,4 +322,152 @@ mod tests {
             assert_eq!(value, Some("persisted".to_string()));
         }
     }
+
+    #[test]
+    fn test_kv_empty_namespace_and_key() {
+        let store = StateStore::open_in_memory().unwrap();
+        store.kv_set("", "", "value").unwrap();
+        let value = store.kv_get("", "").unwrap();
+        assert_eq!(value, Some("value".to_string()));
+    }
+
+    #[test]
+    fn test_kv_unicode_keys_and_values() {
+        let store = StateStore::open_in_memory().unwrap();
+        store.kv_set("\u{1F600}", "\u{4E16}\u{754C}", "\u{1F310}").unwrap();
+        let value = store.kv_get("\u{1F600}", "\u{4E16}\u{754C}").unwrap();
+        assert_eq!(value, Some("\u{1F310}".to_string()));
+    }
+
+    #[test]
+    fn test_kv_large_value() {
+        let store = StateStore::open_in_memory().unwrap();
+        let large = "x".repeat(1_000_000);
+        store.kv_set("ns", "large", &large).unwrap();
+        let value = store.kv_get("ns", "large").unwrap();
+        assert_eq!(value, Some(large));
+    }
+
+    #[test]
+    fn test_kv_list_keys_empty_namespace() {
+        let store = StateStore::open_in_memory().unwrap();
+        let keys = store.kv_list_keys("empty-ns").unwrap();
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn test_messages_with_message_id() {
+        let store = StateStore::open_in_memory().unwrap();
+        let id = store
+            .add_message("cli", "user1", Some("Alice"), "user", "Hello!", Some("msg-123"))
+            .unwrap();
+        assert!(id > 0);
+
+        let messages = store.get_recent_messages("cli", 10).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].message_id, Some("msg-123".to_string()));
+    }
+
+    #[test]
+    fn test_messages_without_sender_name() {
+        let store = StateStore::open_in_memory().unwrap();
+        store
+            .add_message("cli", "user1", None, "user", "Hello!", None)
+            .unwrap();
+
+        let messages = store.get_recent_messages("cli", 10).unwrap();
+        assert_eq!(messages[0].sender_name, None);
+    }
+
+    #[test]
+    fn test_messages_chronological_order() {
+        let store = StateStore::open_in_memory().unwrap();
+
+        for i in 0..5 {
+            store
+                .add_message("cli", "user", None, "user", &format!("msg-{}", i), None)
+                .unwrap();
+        }
+
+        let messages = store.get_recent_messages("cli", 10).unwrap();
+        assert_eq!(messages.len(), 5);
+        // Should be in chronological order
+        for (i, msg) in messages.iter().enumerate() {
+            assert_eq!(msg.content, format!("msg-{}", i));
+        }
+    }
+
+    #[test]
+    fn test_get_recent_messages_empty_channel() {
+        let store = StateStore::open_in_memory().unwrap();
+        let messages = store.get_recent_messages("empty", 10).unwrap();
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_get_recent_messages_limit_zero() {
+        let store = StateStore::open_in_memory().unwrap();
+        store
+            .add_message("cli", "user", None, "user", "msg", None)
+            .unwrap();
+
+        let messages = store.get_recent_messages("cli", 0).unwrap();
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_clear_empty_channel() {
+        let store = StateStore::open_in_memory().unwrap();
+        let count = store.clear_channel_history("empty").unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_clear_does_not_affect_other_channels() {
+        let store = StateStore::open_in_memory().unwrap();
+        store.add_message("cli", "user", None, "user", "cli msg", None).unwrap();
+        store.add_message("telegram", "user", None, "user", "tg msg", None).unwrap();
+
+        store.clear_channel_history("cli").unwrap();
+
+        let cli_msgs = store.get_recent_messages("cli", 10).unwrap();
+        assert!(cli_msgs.is_empty());
+
+        let tg_msgs = store.get_recent_messages("telegram", 10).unwrap();
+        assert_eq!(tg_msgs.len(), 1);
+    }
+
+    #[test]
+    fn test_add_message_returns_incrementing_ids() {
+        let store = StateStore::open_in_memory().unwrap();
+        let id1 = store.add_message("cli", "user", None, "user", "msg1", None).unwrap();
+        let id2 = store.add_message("cli", "user", None, "user", "msg2", None).unwrap();
+        let id3 = store.add_message("cli", "user", None, "user", "msg3", None).unwrap();
+
+        assert!(id2 > id1);
+        assert!(id3 > id2);
+    }
+
+    #[test]
+    fn test_open_creates_parent_directories() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("sub").join("dir").join("state.db");
+
+        let store = StateStore::open(&db_path).unwrap();
+        store.kv_set("ns", "key", "value").unwrap();
+        assert!(db_path.exists());
+    }
+
+    #[test]
+    fn test_kv_many_namespaces() {
+        let store = StateStore::open_in_memory().unwrap();
+        for i in 0..100 {
+            store.kv_set(&format!("ns-{}", i), "key", &format!("val-{}", i)).unwrap();
+        }
+
+        for i in 0..100 {
+            let value = store.kv_get(&format!("ns-{}", i), "key").unwrap();
+            assert_eq!(value, Some(format!("val-{}", i)));
+        }
+    }
 }

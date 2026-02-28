@@ -325,4 +325,179 @@ wasm_file = "missing.wasm"
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"));
     }
+
+    #[test]
+    fn test_get_nonexistent_plugin() {
+        let registry = PluginRegistry::new();
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_remove_nonexistent_plugin() {
+        let mut registry = PluginRegistry::new();
+        assert!(!registry.remove("nonexistent"));
+    }
+
+    #[test]
+    fn test_approve_nonexistent_plugin() {
+        let mut registry = PluginRegistry::new();
+        let result = registry.approve("nonexistent", vec![]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_revoke_nonexistent_plugin() {
+        let mut registry = PluginRegistry::new();
+        let result = registry.revoke("nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_verify_binary_nonexistent_plugin() {
+        let registry = PluginRegistry::new();
+        let result = registry.verify_binary("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_hash_nonexistent_plugin() {
+        let mut registry = PluginRegistry::new();
+        let result = registry.update_hash("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_hash_after_binary_change() {
+        let dir = TempDir::new().unwrap();
+        let manifest_path = setup_plugin(dir.path());
+
+        let mut registry = PluginRegistry::new();
+        registry.install(&manifest_path, dir.path()).unwrap();
+
+        let original_hash = registry.get("echo-tool").unwrap().binary_hash.clone();
+
+        // Modify the binary
+        let wasm_path = dir.path().join("echo-tool").join("echo_tool.wasm");
+        fs::write(&wasm_path, b"modified wasm").unwrap();
+
+        // Hash should now be stale
+        assert!(!registry.verify_binary("echo-tool").unwrap());
+
+        // Update hash
+        registry.update_hash("echo-tool").unwrap();
+        let new_hash = registry.get("echo-tool").unwrap().binary_hash.clone();
+        assert_ne!(original_hash, new_hash);
+
+        // Now verification should pass
+        assert!(registry.verify_binary("echo-tool").unwrap());
+    }
+
+    #[test]
+    fn test_install_overwrites_existing() {
+        let dir = TempDir::new().unwrap();
+        let manifest_path = setup_plugin(dir.path());
+
+        let mut registry = PluginRegistry::new();
+        registry.install(&manifest_path, dir.path()).unwrap();
+        registry
+            .approve("echo-tool", vec!["ipc:messages".to_string()])
+            .unwrap();
+
+        // Reinstall - should overwrite and reset approval
+        registry.install(&manifest_path, dir.path()).unwrap();
+        let entry = registry.get("echo-tool").unwrap();
+        assert!(!entry.approved);
+        assert!(entry.granted_capabilities.is_empty());
+    }
+
+    #[test]
+    fn test_list_empty_registry() {
+        let registry = PluginRegistry::new();
+        assert!(registry.list().is_empty());
+    }
+
+    #[test]
+    fn test_list_multiple_plugins_sorted() {
+        let dir = TempDir::new().unwrap();
+
+        // Create multiple plugins
+        for name in &["charlie", "alpha", "bravo"] {
+            let plugin_dir = dir.path().join(name);
+            fs::create_dir_all(&plugin_dir).unwrap();
+            let manifest = format!(
+                r#"
+capabilities = []
+
+[plugin]
+name = "{}"
+version = "0.1.0"
+description = "Test plugin"
+wasm_file = "plugin.wasm"
+"#,
+                name
+            );
+            fs::write(plugin_dir.join("manifest.toml"), manifest).unwrap();
+            fs::write(plugin_dir.join("plugin.wasm"), b"fake").unwrap();
+        }
+
+        let mut registry = PluginRegistry::new();
+        for name in &["charlie", "alpha", "bravo"] {
+            let manifest_path = dir.path().join(name).join("manifest.toml");
+            registry.install(&manifest_path, dir.path()).unwrap();
+        }
+
+        assert_eq!(registry.list(), vec!["alpha", "bravo", "charlie"]);
+    }
+
+    #[test]
+    fn test_load_nonexistent_registry() {
+        let registry = PluginRegistry::load(Path::new("/nonexistent/registry.json")).unwrap();
+        assert!(registry.list().is_empty());
+    }
+
+    #[test]
+    fn test_save_creates_parent_dirs() {
+        let dir = TempDir::new().unwrap();
+        let registry_path = dir.path().join("sub").join("dir").join("registry.json");
+
+        let registry = PluginRegistry::new();
+        registry.save(&registry_path).unwrap();
+        assert!(registry_path.exists());
+    }
+
+    #[test]
+    fn test_approve_with_multiple_capabilities() {
+        let dir = TempDir::new().unwrap();
+        let manifest_path = setup_plugin(dir.path());
+
+        let mut registry = PluginRegistry::new();
+        registry.install(&manifest_path, dir.path()).unwrap();
+
+        let caps = vec![
+            "ipc:messages".to_string(),
+            "llm:call".to_string(),
+            "state:read".to_string(),
+        ];
+        registry.approve("echo-tool", caps.clone()).unwrap();
+
+        let entry = registry.get("echo-tool").unwrap();
+        assert!(entry.approved);
+        assert_eq!(entry.granted_capabilities, caps);
+    }
+
+    #[test]
+    fn test_install_records_timestamp() {
+        let dir = TempDir::new().unwrap();
+        let manifest_path = setup_plugin(dir.path());
+
+        let mut registry = PluginRegistry::new();
+        registry.install(&manifest_path, dir.path()).unwrap();
+
+        let entry = registry.get("echo-tool").unwrap();
+        // Should be a valid RFC 3339 timestamp
+        assert!(!entry.installed_at.is_empty());
+        assert!(chrono::DateTime::parse_from_rfc3339(&entry.installed_at).is_ok());
+    }
 }

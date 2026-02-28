@@ -341,4 +341,212 @@ mod tests {
             _ => panic!("unexpected message type"),
         }
     }
+
+    #[test]
+    fn test_response_to_ipc_no_reply() {
+        let response = RouteResponse {
+            channel: "cli".to_string(),
+            recipient_id: "user1".to_string(),
+            content: "Hello".to_string(),
+            reply_to: None,
+            request_id: "req-002".to_string(),
+        };
+
+        let ipc = Router::response_to_ipc(&response);
+        match ipc {
+            IpcMessage::OutgoingMessage { reply_to, .. } => {
+                assert_eq!(reply_to, None);
+            }
+            _ => panic!("unexpected message type"),
+        }
+    }
+
+    #[test]
+    fn test_has_channel() {
+        let mut router = Router::new(16);
+        let (tx, _rx) = mpsc::channel(16);
+
+        assert!(!router.has_channel("cli"));
+        router.register_channel("cli".to_string(), tx);
+        assert!(router.has_channel("cli"));
+        assert!(!router.has_channel("telegram"));
+    }
+
+    #[test]
+    fn test_system_prompt_getter() {
+        let mut router = Router::new(16);
+        assert!(router.system_prompt().is_none());
+
+        router.set_system_prompt("You are helpful.".to_string());
+        assert_eq!(router.system_prompt(), Some("You are helpful."));
+    }
+
+    #[test]
+    fn test_system_prompt_override() {
+        let mut router = Router::new(16);
+        router.set_system_prompt("First prompt".to_string());
+        router.set_system_prompt("Second prompt".to_string());
+        assert_eq!(router.system_prompt(), Some("Second prompt"));
+    }
+
+    #[test]
+    fn test_take_receiver_once() {
+        let mut router = Router::new(16);
+        let rx = router.take_receiver();
+        assert!(rx.is_some());
+
+        // Second take should return None
+        let rx2 = router.take_receiver();
+        assert!(rx2.is_none());
+    }
+
+    #[test]
+    fn test_register_channel_overwrites() {
+        let mut router = Router::new(16);
+        let (tx1, _rx1) = mpsc::channel(16);
+        let (tx2, _rx2) = mpsc::channel(16);
+
+        router.register_channel("cli".to_string(), tx1);
+        router.register_channel("cli".to_string(), tx2);
+
+        // Should still have exactly one "cli" channel
+        let channels = router.list_channels();
+        assert_eq!(channels.len(), 1);
+    }
+
+    #[test]
+    fn test_unregister_nonexistent_channel() {
+        let mut router = Router::new(16);
+        let removed = router.unregister_channel("nonexistent");
+        assert!(!removed);
+    }
+
+    #[test]
+    fn test_list_channels_empty() {
+        let router = Router::new(16);
+        assert!(router.list_channels().is_empty());
+    }
+
+    #[test]
+    fn test_build_llm_messages_empty_history() {
+        let mut router = Router::new(16);
+        router.set_system_prompt("System".to_string());
+
+        let messages = router.build_llm_messages(&[]);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "system");
+    }
+
+    #[test]
+    fn test_build_llm_messages_preserves_history_order() {
+        let router = Router::new(16);
+
+        let history = vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: "First".to_string(),
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: "Second".to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: "Third".to_string(),
+            },
+        ];
+
+        let messages = router.build_llm_messages(&history);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].content, "First");
+        assert_eq!(messages[1].content, "Second");
+        assert_eq!(messages[2].content, "Third");
+    }
+
+    #[test]
+    fn test_ipc_to_routable_all_non_message_types() {
+        // All these should return None
+        assert!(Router::ipc_to_routable(&IpcMessage::Pong).is_none());
+        assert!(Router::ipc_to_routable(&IpcMessage::Shutdown).is_none());
+        assert!(Router::ipc_to_routable(&IpcMessage::RegisterAck {
+            session_id: "x".to_string(),
+        })
+        .is_none());
+        assert!(Router::ipc_to_routable(&IpcMessage::Register {
+            adapter_name: "x".to_string(),
+            adapter_type: "y".to_string(),
+        })
+        .is_none());
+        assert!(Router::ipc_to_routable(&IpcMessage::Error {
+            request_id: None,
+            message: "err".to_string(),
+        })
+        .is_none());
+        assert!(Router::ipc_to_routable(&IpcMessage::LlmResponse {
+            request_id: "x".to_string(),
+            content: "y".to_string(),
+        })
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_send_response_to_dropped_receiver() {
+        let mut router = Router::new(16);
+        let (tx, rx) = mpsc::channel(16);
+
+        router.register_channel("cli".to_string(), tx);
+
+        // Drop the receiver
+        drop(rx);
+
+        let response = RouteResponse {
+            channel: "cli".to_string(),
+            recipient_id: "user1".to_string(),
+            content: "Hello!".to_string(),
+            reply_to: None,
+            request_id: "req-001".to_string(),
+        };
+
+        let result = router.send_response(response).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("failed to send"));
+    }
+
+    #[tokio::test]
+    async fn test_incoming_sender_clone() {
+        let mut router = Router::new(16);
+        let sender1 = router.incoming_sender();
+        let sender2 = router.incoming_sender();
+        let mut receiver = router.take_receiver().unwrap();
+
+        // Both senders should work
+        sender1
+            .send(RoutableMessage {
+                channel: "a".to_string(),
+                sender_id: "1".to_string(),
+                sender_name: None,
+                content: "from sender1".to_string(),
+                message_id: "m1".to_string(),
+                request_id: "r1".to_string(),
+            })
+            .await
+            .unwrap();
+
+        sender2
+            .send(RoutableMessage {
+                channel: "b".to_string(),
+                sender_id: "2".to_string(),
+                sender_name: None,
+                content: "from sender2".to_string(),
+                message_id: "m2".to_string(),
+                request_id: "r2".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let msg1 = receiver.recv().await.unwrap();
+        let msg2 = receiver.recv().await.unwrap();
+        assert_eq!(msg1.content, "from sender1");
+        assert_eq!(msg2.content, "from sender2");
+    }
 }

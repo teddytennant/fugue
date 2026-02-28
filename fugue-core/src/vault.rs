@@ -485,4 +485,177 @@ mod tests {
         let remove_err = vault.remove("key").unwrap_err().to_string();
         assert!(remove_err.contains("Keyring backend is not yet implemented"));
     }
+
+    #[test]
+    fn test_keyring_list_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let mut vault = Vault::new(
+            VaultBackend::Keyring,
+            Some(dir.path().join("vault.enc")),
+        );
+        vault.init_with_key(Vault::generate_key());
+
+        let list_err = vault.list().unwrap_err().to_string();
+        assert!(list_err.contains("does not support listing"));
+    }
+
+    #[test]
+    fn test_vault_uninitialized_set_fails() {
+        let dir = TempDir::new().unwrap();
+        let vault = Vault::new(
+            VaultBackend::EncryptedFile,
+            Some(dir.path().join("vault.enc")),
+        );
+        // No init_with_key called — set requires the key for encryption
+
+        let set_err = vault.set("key", "value").unwrap_err().to_string();
+        assert!(set_err.contains("no master key"));
+    }
+
+    #[test]
+    fn test_vault_uninitialized_get_on_existing_file_fails() {
+        let dir = TempDir::new().unwrap();
+        let vault_path = dir.path().join("vault.enc");
+
+        // First, create a valid vault file
+        {
+            let mut v = Vault::new(VaultBackend::EncryptedFile, Some(vault_path.clone()));
+            v.init_with_key(Vault::generate_key());
+            v.set("key", "value").unwrap();
+        }
+
+        // Now try to read without initializing the key
+        let vault = Vault::new(VaultBackend::EncryptedFile, Some(vault_path));
+        let get_err = vault.get("key").unwrap_err().to_string();
+        assert!(get_err.contains("no master key"));
+    }
+
+    #[test]
+    fn test_vault_empty_credential_name() {
+        let dir = TempDir::new().unwrap();
+        let vault = test_vault(dir.path());
+
+        vault.set("", "value").unwrap();
+        let value = vault.get("").unwrap();
+        assert_eq!(value, Some("value".to_string()));
+    }
+
+    #[test]
+    fn test_vault_special_characters_in_value() {
+        let dir = TempDir::new().unwrap();
+        let vault = test_vault(dir.path());
+
+        let special = "key with spaces & special chars: !@#$%^&*(){}[]|\\:\";<>?,./~`";
+        vault.set("special", special).unwrap();
+        let value = vault.get("special").unwrap();
+        assert_eq!(value, Some(special.to_string()));
+    }
+
+    #[test]
+    fn test_vault_unicode_values() {
+        let dir = TempDir::new().unwrap();
+        let vault = test_vault(dir.path());
+
+        let unicode = "key-\u{1F600}-emoji-\u{4E16}\u{754C}";
+        vault.set("unicode", unicode).unwrap();
+        let value = vault.get("unicode").unwrap();
+        assert_eq!(value, Some(unicode.to_string()));
+    }
+
+    #[test]
+    fn test_vault_large_value() {
+        let dir = TempDir::new().unwrap();
+        let vault = test_vault(dir.path());
+
+        let large = "x".repeat(100_000);
+        vault.set("large", &large).unwrap();
+        let value = vault.get("large").unwrap();
+        assert_eq!(value, Some(large));
+    }
+
+    #[test]
+    fn test_vault_multiple_credentials_persistence() {
+        let dir = TempDir::new().unwrap();
+        let key = Vault::generate_key();
+
+        {
+            let mut vault = Vault::new(
+                VaultBackend::EncryptedFile,
+                Some(dir.path().join("vault.enc")),
+            );
+            vault.init_with_key(key);
+            vault.set("key1", "value1").unwrap();
+            vault.set("key2", "value2").unwrap();
+            vault.set("key3", "value3").unwrap();
+        }
+
+        {
+            let mut vault = Vault::new(
+                VaultBackend::EncryptedFile,
+                Some(dir.path().join("vault.enc")),
+            );
+            vault.init_with_key(key);
+            assert_eq!(vault.get("key1").unwrap(), Some("value1".to_string()));
+            assert_eq!(vault.get("key2").unwrap(), Some("value2".to_string()));
+            assert_eq!(vault.get("key3").unwrap(), Some("value3".to_string()));
+            assert_eq!(vault.list().unwrap(), vec!["key1", "key2", "key3"]);
+        }
+    }
+
+    #[test]
+    fn test_vault_remove_nonexistent() {
+        let dir = TempDir::new().unwrap();
+        let vault = test_vault(dir.path());
+
+        // Removing a nonexistent key should succeed (no-op)
+        vault.remove("nonexistent").unwrap();
+    }
+
+    #[test]
+    fn test_vault_resolve_empty_prefix() {
+        let dir = TempDir::new().unwrap();
+        let vault = test_vault(dir.path());
+
+        let result = vault.resolve_credential("vault:");
+        // "vault:" with empty name should look up "" key
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_vault_corrupted_file() {
+        let dir = TempDir::new().unwrap();
+        let vault_path = dir.path().join("vault.enc");
+
+        // Write garbage to vault file
+        std::fs::write(&vault_path, "this is not valid json").unwrap();
+
+        let mut vault = Vault::new(
+            VaultBackend::EncryptedFile,
+            Some(vault_path),
+        );
+        vault.init_with_key(Vault::generate_key());
+
+        let result = vault.get("key");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vault_different_salts_produce_different_keys() {
+        let salt1 = Vault::generate_salt();
+        let salt2 = Vault::generate_salt();
+        // Salts are random so they should differ
+        assert_ne!(salt1, salt2);
+
+        let key1 = Vault::derive_key_from_password("same-password", &salt1).unwrap();
+        let key2 = Vault::derive_key_from_password("same-password", &salt2).unwrap();
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_vault_generate_key_is_random() {
+        let key1 = Vault::generate_key();
+        let key2 = Vault::generate_key();
+        assert_ne!(key1, key2);
+    }
 }

@@ -212,4 +212,133 @@ wasm_file = "dangerous.wasm"
         assert!(caps.contains(&Capability::ExecSubprocess));
         assert!(caps.contains(&Capability::CredentialRead("my-secret".to_string())));
     }
+
+    #[test]
+    fn test_malformed_toml() {
+        let result = PluginManifest::parse("this is {not valid toml");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_missing_plugin_section() {
+        let toml_str = r#"
+capabilities = ["ipc:messages"]
+"#;
+        let result = PluginManifest::parse(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_missing_required_fields() {
+        // Missing description
+        let toml_str = r#"
+[plugin]
+name = "test"
+version = "0.1.0"
+wasm_file = "test.wasm"
+"#;
+        let result = PluginManifest::parse(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_all_capability_types_in_manifest() {
+        let toml_str = r#"
+capabilities = [
+    "fs:read",
+    "fs:read:/tmp",
+    "fs:write",
+    "fs:write:/var/data",
+    "net:outbound",
+    "net:outbound:https://api.example.com",
+    "ipc:messages",
+    "llm:call",
+    "state:read",
+    "state:write",
+    "exec:subprocess",
+    "credential:read:my-key"
+]
+
+[plugin]
+name = "all-caps"
+version = "0.1.0"
+description = "Plugin with all capabilities"
+wasm_file = "all.wasm"
+"#;
+        let manifest = PluginManifest::parse(toml_str).unwrap();
+        assert_eq!(manifest.capabilities.len(), 12);
+        assert_eq!(manifest.parsed_capabilities().len(), 12);
+    }
+
+    #[test]
+    fn test_optional_fields() {
+        let toml_str = r#"
+[plugin]
+name = "test"
+version = "0.1.0"
+description = "No author or license"
+wasm_file = "test.wasm"
+"#;
+        let manifest = PluginManifest::parse(toml_str).unwrap();
+        assert!(manifest.plugin.author.is_none());
+        assert!(manifest.plugin.license.is_none());
+    }
+
+    #[test]
+    fn test_with_author_and_license() {
+        let toml_str = r#"
+[plugin]
+name = "test"
+version = "0.1.0"
+description = "Full metadata"
+wasm_file = "test.wasm"
+author = "Test Author"
+license = "MIT"
+"#;
+        let manifest = PluginManifest::parse(toml_str).unwrap();
+        assert_eq!(manifest.plugin.author, Some("Test Author".to_string()));
+        assert_eq!(manifest.plugin.license, Some("MIT".to_string()));
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let result = PluginManifest::load(std::path::Path::new("/nonexistent/manifest.toml"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_from_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("manifest.toml");
+        std::fs::write(
+            &path,
+            r#"
+[plugin]
+name = "file-test"
+version = "1.0.0"
+description = "Loaded from file"
+wasm_file = "test.wasm"
+"#,
+        )
+        .unwrap();
+
+        let manifest = PluginManifest::load(&path).unwrap();
+        assert_eq!(manifest.plugin.name, "file-test");
+    }
+
+    #[test]
+    fn test_duplicate_capabilities() {
+        let toml_str = r#"
+capabilities = ["ipc:messages", "ipc:messages", "llm:call"]
+
+[plugin]
+name = "test"
+version = "0.1.0"
+description = "Duplicate caps"
+wasm_file = "test.wasm"
+"#;
+        // Duplicates are allowed (they just parse)
+        let manifest = PluginManifest::parse(toml_str).unwrap();
+        assert_eq!(manifest.capabilities.len(), 3);
+    }
 }

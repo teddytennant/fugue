@@ -186,4 +186,203 @@ mod tests {
 
         client.await.unwrap();
     }
+
+    #[tokio::test]
+    async fn test_adapter_handshake_error_response() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sock_path = dir.path().join("test.sock");
+
+        let listener = fugue_core::ipc::create_listener(&sock_path).await.unwrap();
+
+        let sock_path_clone = sock_path.clone();
+        let client = tokio::spawn(async move {
+            let mut conn = AdapterConnection::connect(
+                &sock_path_clone,
+                "bad-adapter".to_string(),
+                "cli".to_string(),
+            )
+            .await
+            .unwrap();
+
+            let result = conn.handshake().await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("handshake failed"));
+            assert!(matches!(conn.state(), HandshakeState::Failed { .. }));
+        });
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _msg = ipc::read_message(&mut stream).await.unwrap();
+
+        // Respond with an error
+        let err = IpcMessage::Error {
+            request_id: None,
+            message: "adapter not allowed".to_string(),
+        };
+        ipc::write_message(&mut stream, &err).await.unwrap();
+
+        client.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_adapter_handshake_unexpected_response() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sock_path = dir.path().join("test.sock");
+
+        let listener = fugue_core::ipc::create_listener(&sock_path).await.unwrap();
+
+        let sock_path_clone = sock_path.clone();
+        let client = tokio::spawn(async move {
+            let mut conn = AdapterConnection::connect(
+                &sock_path_clone,
+                "adapter".to_string(),
+                "cli".to_string(),
+            )
+            .await
+            .unwrap();
+
+            let result = conn.handshake().await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("unexpected response"));
+        });
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _msg = ipc::read_message(&mut stream).await.unwrap();
+
+        // Respond with an unexpected message type
+        let pong = IpcMessage::Pong;
+        ipc::write_message(&mut stream, &pong).await.unwrap();
+
+        client.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_adapter_send_incoming() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sock_path = dir.path().join("test.sock");
+
+        let listener = fugue_core::ipc::create_listener(&sock_path).await.unwrap();
+
+        let sock_path_clone = sock_path.clone();
+        let client = tokio::spawn(async move {
+            let mut conn = AdapterConnection::connect(
+                &sock_path_clone,
+                "test-adapter".to_string(),
+                "telegram".to_string(),
+            )
+            .await
+            .unwrap();
+
+            conn.send_incoming(
+                "user-123".to_string(),
+                Some("Alice".to_string()),
+                "Hello from user".to_string(),
+                "msg-001".to_string(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let msg = ipc::read_message(&mut stream).await.unwrap();
+
+        match msg {
+            IpcMessage::IncomingMessage {
+                channel,
+                sender_id,
+                sender_name,
+                content,
+                message_id,
+                request_id,
+            } => {
+                assert_eq!(channel, "test-adapter");
+                assert_eq!(sender_id, "user-123");
+                assert_eq!(sender_name, Some("Alice".to_string()));
+                assert_eq!(content, "Hello from user");
+                assert_eq!(message_id, "msg-001");
+                // request_id should be a valid UUID
+                assert!(uuid::Uuid::parse_str(&request_id).is_ok());
+            }
+            _ => panic!("expected IncomingMessage"),
+        }
+
+        client.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_adapter_send_and_recv() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sock_path = dir.path().join("test.sock");
+
+        let listener = fugue_core::ipc::create_listener(&sock_path).await.unwrap();
+
+        let sock_path_clone = sock_path.clone();
+        let client = tokio::spawn(async move {
+            let mut conn = AdapterConnection::connect(
+                &sock_path_clone,
+                "adapter".to_string(),
+                "cli".to_string(),
+            )
+            .await
+            .unwrap();
+
+            // Send a ping
+            conn.send(&IpcMessage::Ping).await.unwrap();
+
+            // Receive pong
+            let msg = conn.recv().await.unwrap();
+            assert!(matches!(msg, IpcMessage::Pong));
+        });
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let msg = ipc::read_message(&mut stream).await.unwrap();
+        assert!(matches!(msg, IpcMessage::Ping));
+
+        ipc::write_message(&mut stream, &IpcMessage::Pong).await.unwrap();
+
+        client.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_adapter_connect_nonexistent_socket() {
+        let result = AdapterConnection::connect(
+            std::path::Path::new("/nonexistent/socket.sock"),
+            "adapter".to_string(),
+            "cli".to_string(),
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_handshake_state_variants() {
+        let disconnected = HandshakeState::Disconnected;
+        let connecting = HandshakeState::Connecting;
+        let waiting = HandshakeState::WaitingForAck;
+        let connected = HandshakeState::Connected {
+            session_id: "sess-1".to_string(),
+        };
+        let failed = HandshakeState::Failed {
+            reason: "test".to_string(),
+        };
+
+        assert_eq!(disconnected, HandshakeState::Disconnected);
+        assert_eq!(connecting, HandshakeState::Connecting);
+        assert_eq!(waiting, HandshakeState::WaitingForAck);
+        assert_ne!(disconnected, connecting);
+        assert_ne!(connected, failed);
+    }
+
+    #[test]
+    fn test_is_allowed_with_single_entry() {
+        let allowlist = vec!["only-me".to_string()];
+        assert!(is_allowed("only-me", &allowlist));
+        assert!(!is_allowed("not-me", &allowlist));
+    }
+
+    #[test]
+    fn test_is_allowed_empty_sender_id() {
+        assert!(is_allowed("", &[]));
+        assert!(!is_allowed("", &["user1".to_string()]));
+        assert!(is_allowed("", &["".to_string()]));
+    }
 }
