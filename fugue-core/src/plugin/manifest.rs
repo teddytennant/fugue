@@ -51,6 +51,16 @@ impl PluginManifest {
             return Err(FugueError::Plugin("plugin name cannot be empty".to_string()));
         }
 
+        if self.plugin.name.contains('/')
+            || self.plugin.name.contains('\\')
+            || self.plugin.name.contains("..")
+        {
+            return Err(FugueError::Plugin(format!(
+                "plugin name '{}' contains invalid path characters",
+                self.plugin.name
+            )));
+        }
+
         if self.plugin.version.is_empty() {
             return Err(FugueError::Plugin(
                 "plugin version cannot be empty".to_string(),
@@ -61,6 +71,16 @@ impl PluginManifest {
             return Err(FugueError::Plugin(
                 "plugin wasm_file cannot be empty".to_string(),
             ));
+        }
+
+        if self.plugin.wasm_file.contains("..")
+            || self.plugin.wasm_file.starts_with('/')
+            || self.plugin.wasm_file.starts_with('\\')
+        {
+            return Err(FugueError::Plugin(format!(
+                "plugin wasm_file '{}' contains invalid path characters",
+                self.plugin.wasm_file
+            )));
         }
 
         // Validate all capability strings parse correctly
@@ -340,5 +360,61 @@ wasm_file = "test.wasm"
         // Duplicates are allowed (they just parse)
         let manifest = PluginManifest::parse(toml_str).unwrap();
         assert_eq!(manifest.capabilities.len(), 3);
+    }
+
+    #[test]
+    fn test_plugin_name_with_path_separator_rejected() {
+        let toml_str = r#"
+[plugin]
+name = "../evil"
+version = "0.1.0"
+description = "Path traversal"
+wasm_file = "test.wasm"
+"#;
+        let result = PluginManifest::parse(toml_str);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid path characters"));
+    }
+
+    #[test]
+    fn test_plugin_name_with_slash_rejected() {
+        let toml_str = r#"
+[plugin]
+name = "foo/bar"
+version = "0.1.0"
+description = "Slash in name"
+wasm_file = "test.wasm"
+"#;
+        let result = PluginManifest::parse(toml_str);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid path characters"));
+    }
+
+    #[test]
+    fn test_wasm_file_path_traversal_rejected() {
+        let toml_str = r#"
+[plugin]
+name = "test"
+version = "0.1.0"
+description = "Path traversal in wasm_file"
+wasm_file = "../../etc/passwd"
+"#;
+        let result = PluginManifest::parse(toml_str);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid path characters"));
+    }
+
+    #[test]
+    fn test_wasm_file_absolute_path_rejected() {
+        let toml_str = r#"
+[plugin]
+name = "test"
+version = "0.1.0"
+description = "Absolute wasm_file"
+wasm_file = "/etc/passwd"
+"#;
+        let result = PluginManifest::parse(toml_str);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid path characters"));
     }
 }
