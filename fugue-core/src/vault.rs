@@ -89,6 +89,11 @@ impl Vault {
 
     /// Set a credential in the vault
     pub fn set(&self, name: &str, value: &str) -> Result<()> {
+        if name.is_empty() {
+            return Err(FugueError::Vault(
+                "credential name cannot be empty".to_string(),
+            ));
+        }
         match self.backend {
             VaultBackend::EncryptedFile => self.set_encrypted_file(name, value),
             VaultBackend::Keyring => self.set_keyring(name, value),
@@ -531,13 +536,13 @@ mod tests {
     }
 
     #[test]
-    fn test_vault_empty_credential_name() {
+    fn test_vault_empty_credential_name_rejected() {
         let dir = TempDir::new().unwrap();
         let vault = test_vault(dir.path());
 
-        vault.set("", "value").unwrap();
-        let value = vault.get("").unwrap();
-        assert_eq!(value, Some("value".to_string()));
+        let result = vault.set("", "value");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
     }
 
     #[test]
