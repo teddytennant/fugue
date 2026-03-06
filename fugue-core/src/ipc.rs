@@ -82,7 +82,13 @@ pub fn encode_frame(msg: &IpcMessage) -> Result<Vec<u8>> {
     let payload = rmp_serde::to_vec(msg)
         .map_err(|e| FugueError::Ipc(format!("failed to encode message: {}", e)))?;
 
-    let len = payload.len() as u32;
+    let len = u32::try_from(payload.len()).map_err(|_| {
+        FugueError::Ipc(format!(
+            "frame too large: {} bytes (max {})",
+            payload.len(),
+            MAX_FRAME_SIZE
+        ))
+    })?;
     if len > MAX_FRAME_SIZE {
         return Err(FugueError::Ipc(format!(
             "frame too large: {} bytes (max {})",
