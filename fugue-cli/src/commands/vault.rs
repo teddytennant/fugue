@@ -81,6 +81,22 @@ fn derive_vault_key() -> Result<[u8; 32]> {
     let kp = key_path();
 
     if kp.exists() {
+        // Warn if key file has overly permissive permissions
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::metadata(&kp)?.permissions();
+            let mode = perms.mode() & 0o777;
+            if mode & 0o077 != 0 {
+                eprintln!(
+                    "Warning: vault key file {} has permissions {:o}, which allows access by other users.",
+                    kp.display(),
+                    mode
+                );
+                eprintln!("         Run: chmod 600 {}", kp.display());
+            }
+        }
+
         let data = std::fs::read(&kp)?;
         if data.len() == 32 {
             let mut key = [0u8; 32];
@@ -162,6 +178,8 @@ pub async fn set(name: &str, value: Option<&str>, use_password: bool) -> Result<
     let vault = open_vault(use_password)?;
 
     let value = if let Some(v) = value {
+        eprintln!("Warning: passing secrets as command-line arguments exposes them in shell history and process listings.");
+        eprintln!("         Omit the value argument to enter it interactively instead.");
         v.to_string()
     } else {
         eprint!("Enter value for '{}': ", name);
