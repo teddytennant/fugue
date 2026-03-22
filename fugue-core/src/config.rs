@@ -240,6 +240,7 @@ impl FugueConfig {
         if self.network.http_enabled
             && self.network.bind_address != "127.0.0.1"
             && self.network.bind_address != "::1"
+            && self.network.bind_address != "localhost"
             && !self.network.i_understand_the_risk
         {
             return Err(FugueError::Config(
