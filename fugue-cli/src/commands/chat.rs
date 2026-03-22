@@ -55,6 +55,10 @@ pub async fn run(provider_name: Option<String>, system_prompt: Option<String>) -
     println!("Fugue Chat (provider: {}, /quit to exit)", provider);
     println!();
 
+    // Cap conversation history to avoid unbounded memory growth and exceeding
+    // LLM context windows. System prompt (if any) is always preserved.
+    const MAX_HISTORY_MESSAGES: usize = 100;
+
     let mut history: Vec<ChatMessage> = Vec::new();
 
     if let Some(system) = system_prompt {
@@ -101,6 +105,16 @@ pub async fn run(provider_name: Option<String>, system_prompt: Option<String>) -
                     role: "assistant".to_string(),
                     content: response.content,
                 });
+
+                // Trim history to prevent unbounded growth. Keep the system
+                // prompt (if present at index 0) and the most recent messages.
+                let has_system = history.first().map_or(false, |m| m.role == "system");
+                let non_system_start = if has_system { 1 } else { 0 };
+                let non_system_count = history.len() - non_system_start;
+                if non_system_count > MAX_HISTORY_MESSAGES {
+                    let excess = non_system_count - MAX_HISTORY_MESSAGES;
+                    history.drain(non_system_start..non_system_start + excess);
+                }
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
