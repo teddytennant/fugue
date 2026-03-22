@@ -94,6 +94,17 @@ impl Vault {
                 "credential name cannot be empty".to_string(),
             ));
         }
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err(FugueError::Vault(format!(
+                "credential name '{}' contains invalid characters (/, \\, or ..)",
+                name
+            )));
+        }
+        if name.len() > 256 {
+            return Err(FugueError::Vault(
+                "credential name exceeds 256 characters".to_string(),
+            ));
+        }
         match self.backend {
             VaultBackend::EncryptedFile => self.set_encrypted_file(name, value),
             VaultBackend::Keyring => self.set_keyring(name, value),
@@ -543,6 +554,33 @@ mod tests {
         let result = vault.set("", "value");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_vault_path_traversal_credential_name_rejected() {
+        let dir = TempDir::new().unwrap();
+        let vault = test_vault(dir.path());
+
+        let result = vault.set("../etc/passwd", "value");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid characters"));
+
+        let result = vault.set("foo/bar", "value");
+        assert!(result.is_err());
+
+        let result = vault.set("foo\\bar", "value");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vault_long_credential_name_rejected() {
+        let dir = TempDir::new().unwrap();
+        let vault = test_vault(dir.path());
+
+        let long_name = "a".repeat(257);
+        let result = vault.set(&long_name, "value");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("256 characters"));
     }
 
     #[test]
