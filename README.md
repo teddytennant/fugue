@@ -15,7 +15,7 @@ A security-first AI agent gateway that connects LLM providers to messaging chann
 
 **LLM Providers:** Ollama, Anthropic, OpenAI
 
-**Channels:** Telegram, Discord, IRC, Matrix, CLI
+**Channels:** Telegram, Discord, IRC, Matrix, Signal, Slack, WhatsApp, CLI
 
 ## Quick Start
 
