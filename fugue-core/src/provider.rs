@@ -2,10 +2,20 @@
 
 use serde::{Deserialize, Serialize};
 
+use std::time::Duration;
+
 use crate::config::{ProviderConfig, ProviderType};
 use crate::error::{FugueError, Result};
 use crate::ipc::ChatMessage;
 use crate::vault::Vault;
+
+/// Default timeout for LLM HTTP requests (5 minutes).
+/// LLM inference can be slow, especially for large models or long contexts,
+/// but we still need a ceiling to avoid hanging indefinitely.
+const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Default connection timeout (10 seconds).
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Classify an HTTP error status code into a descriptive category
 fn classify_http_error(status: reqwest::StatusCode, provider: &str, body: &str) -> FugueError {
@@ -54,8 +64,14 @@ impl Default for ProviderManager {
 
 impl ProviderManager {
     pub fn new() -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(DEFAULT_HTTP_TIMEOUT)
+            .connect_timeout(DEFAULT_CONNECT_TIMEOUT)
+            .build()
+            .expect("failed to build HTTP client");
+
         Self {
-            client: reqwest::Client::new(),
+            client,
             providers: Vec::new(),
         }
     }
