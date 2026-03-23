@@ -67,25 +67,7 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
     let mut provider_manager = ProviderManager::new();
 
     // Set up vault if any providers need credentials
-    let vault = if config.providers.values().any(|p| p.credential.is_some()) {
-        let mut v = Vault::new(
-            config.vault.backend.clone(),
-            config.vault.encrypted_file_path.clone(),
-        );
-        // Load key
-        let key_path = FugueConfig::data_dir().join("vault.key");
-        if key_path.exists() {
-            let data = std::fs::read(&key_path)?;
-            if data.len() == 32 {
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&data);
-                v.init_with_key(key);
-            }
-        }
-        Some(v)
-    } else {
-        None
-    };
+    let vault = Vault::load_from_config(&config)?;
 
     // Register providers
     for (name, provider_config) in &config.providers {

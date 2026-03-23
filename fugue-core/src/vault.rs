@@ -10,7 +10,7 @@ use sha2::Sha256;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::config::VaultBackend;
+use crate::config::{FugueConfig, VaultBackend};
 use crate::error::{FugueError, Result};
 
 const NONCE_SIZE: usize = 12;
@@ -137,6 +137,32 @@ impl Vault {
         }
     }
 
+    /// Load a vault from the standard config, initializing the master key from
+    /// the on-disk key file if one exists.  Returns `None` when no provider
+    /// references a vault credential.
+    pub fn load_from_config(config: &FugueConfig) -> Result<Option<Self>> {
+        if !config.providers.values().any(|p| p.credential.is_some()) {
+            return Ok(None);
+        }
+
+        let mut vault = Vault::new(
+            config.vault.backend.clone(),
+            config.vault.encrypted_file_path.clone(),
+        );
+
+        let key_path = FugueConfig::data_dir().join("vault.key");
+        if key_path.exists() {
+            let data = std::fs::read(&key_path)?;
+            if data.len() == KEY_SIZE {
+                let mut key = [0u8; KEY_SIZE];
+                key.copy_from_slice(&data);
+                vault.init_with_key(key);
+            }
+        }
+
+        Ok(Some(vault))
+    }
+
     /// Resolve a credential reference (e.g., "vault:my-key") to its value
     pub fn resolve_credential(&self, reference: &str) -> Result<String> {
         let name = reference
@@ -209,10 +235,12 @@ impl Vault {
             .map_err(|e| FugueError::Vault(format!("encryption failed: {}", e)))?;
 
         use base64::Engine;
+        let mut salt_bytes = [0u8; SALT_SIZE];
+        OsRng.fill_bytes(&mut salt_bytes);
         let encrypted = EncryptedVaultData {
             data: base64::engine::general_purpose::STANDARD.encode(&ciphertext),
             nonce: base64::engine::general_purpose::STANDARD.encode(nonce_bytes),
-            salt: base64::engine::general_purpose::STANDARD.encode([0u8; 16]), // placeholder
+            salt: base64::engine::general_purpose::STANDARD.encode(salt_bytes),
         };
 
         if let Some(parent) = self.file_path.parent() {
