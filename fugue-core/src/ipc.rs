@@ -157,6 +157,36 @@ pub async fn read_message(stream: &mut UnixStream) -> Result<IpcMessage> {
     Ok(msg)
 }
 
+/// Write a message to any async writer (works with split stream halves).
+pub async fn write_to<W: AsyncWriteExt + Unpin>(writer: &mut W, msg: &IpcMessage) -> Result<()> {
+    let frame = encode_frame(msg)?;
+    writer.write_all(&frame).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Read a message from any async reader (works with split stream halves).
+pub async fn read_from<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<IpcMessage> {
+    let mut len_buf = [0u8; 4];
+    reader.read_exact(&mut len_buf).await?;
+
+    let len = u32::from_be_bytes(len_buf);
+    if len > MAX_FRAME_SIZE {
+        return Err(FugueError::Ipc(format!(
+            "frame too large: {} bytes (max {})",
+            len, MAX_FRAME_SIZE
+        )));
+    }
+
+    let mut payload = vec![0u8; len as usize];
+    reader.read_exact(&mut payload).await?;
+
+    let msg: IpcMessage = rmp_serde::from_slice(&payload)
+        .map_err(|e| FugueError::Ipc(format!("failed to decode message: {}", e)))?;
+
+    Ok(msg)
+}
+
 /// Create a Unix socket listener, removing stale socket file if needed
 pub async fn create_listener(path: &std::path::Path) -> Result<UnixListener> {
     if let Some(parent) = path.parent() {

@@ -1,19 +1,27 @@
 use anyhow::Result;
 use fugue_core::audit::{self, AuditEventType, AuditLog, AuditSeverity};
 use fugue_core::ipc::{self, ChatMessage, IpcMessage};
-use fugue_core::plugin::{OnMessageResult, PluginManager};
 use fugue_core::plugin::runtime::RuntimeConfig;
+use fugue_core::plugin::{OnMessageResult, PluginManager};
 use fugue_core::provider::ProviderManager;
 use fugue_core::router::{RouteResponse, Router};
 use fugue_core::state::StateStore;
 use fugue_core::vault::Vault;
 use fugue_core::FugueConfig;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc, Semaphore};
 
 /// Maximum number of concurrent IPC connections
 const MAX_CONCURRENT_CONNECTIONS: usize = 32;
+
+/// Response channel buffer size per adapter
+const RESPONSE_BUFFER_SIZE: usize = 64;
+
+/// Shared adapter response channels — maps channel name to response sender.
+/// Used by the main event loop to send responses back to the correct adapter.
+type ResponseChannels = Arc<tokio::sync::Mutex<HashMap<String, mpsc::Sender<RouteResponse>>>>;
 
 pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
     let config_path = config_path
@@ -84,15 +92,14 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
     // Register providers
     for (name, provider_config) in &config.providers {
         tracing::info!("registering provider: {}", name);
-        provider_manager.register(
-            name.clone(),
-            provider_config.clone(),
-            vault.as_ref(),
-        )?;
+        provider_manager.register(name.clone(), provider_config.clone(), vault.as_ref())?;
     }
 
     // Initialize router
     let mut router = Router::new(256);
+
+    // Shared response channels for bidirectional communication
+    let response_channels: ResponseChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     // Set up IPC listener
     let socket_path = &config.core.socket_path;
@@ -111,69 +118,28 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
 
     // Main event loop
     tokio::select! {
+        // Branch 1: Accept new IPC connections from adapters
         _ = async {
             loop {
                 match listener.accept().await {
-                    Ok((mut stream, _addr)) => {
+                    Ok((stream, _addr)) => {
                         let tx = incoming_tx.clone();
                         let sem = conn_semaphore.clone();
+                        let channels = response_channels.clone();
                         let permit = match sem.try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {
                                 tracing::warn!(
-                                    "max concurrent IPC connections ({}) reached, rejecting connection",
+                                    "max concurrent IPC connections ({}) reached, rejecting",
                                     MAX_CONCURRENT_CONNECTIONS
                                 );
-                                let _ = ipc::write_message(
-                                    &mut stream,
-                                    &IpcMessage::Error {
-                                        request_id: None,
-                                        message: "too many concurrent connections".to_string(),
-                                    },
-                                ).await;
                                 continue;
                             }
                         };
+
                         tokio::spawn(async move {
-                            let _permit = permit; // held until task ends
-                            tracing::info!("new IPC connection");
-                            loop {
-                                match ipc::read_message(&mut stream).await {
-                                    Ok(msg) => {
-                                        match msg {
-                                            IpcMessage::Ping => {
-                                                let _ = ipc::write_message(&mut stream, &IpcMessage::Pong).await;
-                                            }
-                                            IpcMessage::Register { adapter_name, adapter_type } => {
-                                                tracing::info!("adapter registered: {} ({})", adapter_name, adapter_type);
-                                                let ack = IpcMessage::RegisterAck {
-                                                    session_id: uuid::Uuid::new_v4().to_string(),
-                                                };
-                                                let _ = ipc::write_message(&mut stream, &ack).await;
-                                            }
-                                            IpcMessage::Shutdown => {
-                                                tracing::info!("shutdown requested via IPC");
-                                                return;
-                                            }
-                                            other => {
-                                                if let Some(routable) = Router::ipc_to_routable(&other) {
-                                                    tracing::info!(
-                                                        request_id = %routable.request_id,
-                                                        "routing message from {} on {}",
-                                                        routable.sender_id,
-                                                        routable.channel,
-                                                    );
-                                                    let _ = tx.send(routable).await;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::debug!("IPC connection closed: {}", e);
-                                        return;
-                                    }
-                                }
-                            }
+                            let _permit = permit;
+                            handle_adapter_connection(stream, tx, channels).await;
                         });
                     }
                     Err(e) => {
@@ -182,6 +148,8 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                 }
             }
         } => {}
+
+        // Branch 2: Process incoming messages (router → plugins → LLM → response)
         _ = async {
             while let Some(msg) = receiver.recv().await {
                 tracing::info!(
@@ -195,21 +163,18 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                 // --- Plugin pipeline: on_message (before LLM) ---
                 let (user_content, extra_context) = match plugin_manager.on_message(&msg) {
                     OnMessageResult::Respond(response) => {
-                        // Plugin short-circuited — send response directly, skip LLM
                         tracing::info!(
                             request_id = %msg.request_id,
                             "plugin responded directly"
                         );
                         let route_response = RouteResponse {
-                            channel: msg.channel,
-                            recipient_id: msg.sender_id,
+                            channel: msg.channel.clone(),
+                            recipient_id: msg.sender_id.clone(),
                             content: response,
-                            reply_to: Some(msg.message_id),
-                            request_id: msg.request_id,
+                            reply_to: Some(msg.message_id.clone()),
+                            request_id: msg.request_id.clone(),
                         };
-                        if let Err(e) = router.send_response(route_response).await {
-                            tracing::error!("failed to route plugin response: {}", e);
-                        }
+                        send_to_adapter(&response_channels, &msg.channel, route_response).await;
                         continue;
                     }
                     OnMessageResult::Continue {
@@ -266,15 +231,13 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                                 .unwrap_or(response.content);
 
                             let route_response = RouteResponse {
-                                channel: msg.channel,
-                                recipient_id: msg.sender_id,
+                                channel: msg.channel.clone(),
+                                recipient_id: msg.sender_id.clone(),
                                 content: final_content,
-                                reply_to: Some(msg.message_id),
-                                request_id: msg.request_id,
+                                reply_to: Some(msg.message_id.clone()),
+                                request_id: msg.request_id.clone(),
                             };
-                            if let Err(e) = router.send_response(route_response).await {
-                                tracing::error!("failed to route response: {}", e);
-                            }
+                            send_to_adapter(&response_channels, &msg.channel, route_response).await;
                         }
                         Err(e) => {
                             tracing::error!(
@@ -282,11 +245,32 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                                 "LLM error: {}",
                                 e
                             );
+                            // Send error back to adapter
+                            let route_response = RouteResponse {
+                                channel: msg.channel.clone(),
+                                recipient_id: msg.sender_id.clone(),
+                                content: format!("Error: {}", e),
+                                reply_to: Some(msg.message_id.clone()),
+                                request_id: msg.request_id.clone(),
+                            };
+                            send_to_adapter(&response_channels, &msg.channel, route_response).await;
                         }
                     }
+                } else {
+                    tracing::warn!("no providers configured");
+                    let route_response = RouteResponse {
+                        channel: msg.channel.clone(),
+                        recipient_id: msg.sender_id.clone(),
+                        content: "Error: no LLM providers configured".to_string(),
+                        reply_to: Some(msg.message_id.clone()),
+                        request_id: msg.request_id.clone(),
+                    };
+                    send_to_adapter(&response_channels, &msg.channel, route_response).await;
                 }
             }
         } => {}
+
+        // Branch 3: Ctrl+C shutdown
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("received Ctrl+C, shutting down");
         }
@@ -307,4 +291,128 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
 
     println!("Fugue stopped");
     Ok(())
+}
+
+/// Handle a single adapter connection with bidirectional IPC.
+///
+/// 1. Reads the Register message to get the adapter's channel name
+/// 2. Splits the stream into read/write halves
+/// 3. Spawns a response-writer task that forwards responses back to the adapter
+/// 4. Reads incoming messages and forwards them to the router
+async fn handle_adapter_connection(
+    stream: tokio::net::UnixStream,
+    incoming_tx: mpsc::Sender<fugue_core::router::RoutableMessage>,
+    response_channels: ResponseChannels,
+) {
+    let (mut read_half, mut write_half) = stream.into_split();
+
+    // Step 1: Read the Register message
+    let channel_name = match ipc::read_from(&mut read_half).await {
+        Ok(IpcMessage::Register {
+            adapter_name,
+            adapter_type,
+        }) => {
+            tracing::info!("adapter registered: {} ({})", adapter_name, adapter_type);
+            let ack = IpcMessage::RegisterAck {
+                session_id: uuid::Uuid::new_v4().to_string(),
+            };
+            if let Err(e) = ipc::write_to(&mut write_half, &ack).await {
+                tracing::error!("failed to send RegisterAck: {}", e);
+                return;
+            }
+            adapter_name
+        }
+        Ok(IpcMessage::Ping) => {
+            let _ = ipc::write_to(&mut write_half, &IpcMessage::Pong).await;
+            return;
+        }
+        Ok(other) => {
+            tracing::warn!("expected Register message, got: {:?}", other);
+            return;
+        }
+        Err(e) => {
+            tracing::debug!("connection closed before register: {}", e);
+            return;
+        }
+    };
+
+    // Step 2: Create a response channel for this adapter
+    let (response_tx, mut response_rx) = mpsc::channel::<RouteResponse>(RESPONSE_BUFFER_SIZE);
+
+    // Register in the shared map
+    {
+        let mut channels = response_channels.lock().await;
+        channels.insert(channel_name.clone(), response_tx);
+    }
+
+    let channel_name_clone = channel_name.clone();
+
+    // Step 3: Spawn response-writer task (reads from mpsc, writes to IPC socket)
+    let writer_handle = tokio::spawn(async move {
+        while let Some(response) = response_rx.recv().await {
+            let ipc_msg = Router::response_to_ipc(&response);
+            if let Err(e) = ipc::write_to(&mut write_half, &ipc_msg).await {
+                tracing::debug!("response write failed for {}: {}", channel_name_clone, e);
+                break;
+            }
+        }
+    });
+
+    // Step 4: Read incoming messages and forward to router
+    loop {
+        match ipc::read_from(&mut read_half).await {
+            Ok(msg) => match msg {
+                IpcMessage::Ping => {
+                    // Can't write to write_half from here (it's moved), so skip
+                    // Pings should be handled before register
+                }
+                IpcMessage::Shutdown => {
+                    tracing::info!("shutdown requested via IPC from {}", channel_name);
+                    break;
+                }
+                other => {
+                    if let Some(routable) = Router::ipc_to_routable(&other) {
+                        tracing::info!(
+                            request_id = %routable.request_id,
+                            "routing message from {} on {}",
+                            routable.sender_id,
+                            routable.channel,
+                        );
+                        let _ = incoming_tx.send(routable).await;
+                    }
+                }
+            },
+            Err(e) => {
+                tracing::debug!("adapter {} disconnected: {}", channel_name, e);
+                break;
+            }
+        }
+    }
+
+    // Cleanup: unregister channel and abort writer
+    {
+        let mut channels = response_channels.lock().await;
+        channels.remove(&channel_name);
+    }
+    writer_handle.abort();
+    tracing::info!("adapter {} cleaned up", channel_name);
+}
+
+/// Send a response to an adapter via its registered response channel.
+async fn send_to_adapter(
+    channels: &ResponseChannels,
+    channel_name: &str,
+    response: RouteResponse,
+) {
+    let channels = channels.lock().await;
+    if let Some(sender) = channels.get(channel_name) {
+        if let Err(e) = sender.send(response).await {
+            tracing::error!("failed to send response to adapter {}: {}", channel_name, e);
+        }
+    } else {
+        tracing::warn!(
+            "no adapter registered for channel '{}', response dropped",
+            channel_name
+        );
+    }
 }
