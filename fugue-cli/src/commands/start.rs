@@ -1,13 +1,15 @@
 use anyhow::Result;
 use fugue_core::audit::{self, AuditEventType, AuditLog, AuditSeverity};
 use fugue_core::ipc::{self, ChatMessage, IpcMessage};
+use fugue_core::plugin::{OnMessageResult, PluginManager};
+use fugue_core::plugin::runtime::RuntimeConfig;
 use fugue_core::provider::ProviderManager;
 use fugue_core::router::{RouteResponse, Router};
 use fugue_core::state::StateStore;
 use fugue_core::vault::Vault;
 use fugue_core::FugueConfig;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 
 /// Maximum number of concurrent IPC connections
@@ -38,8 +40,18 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
 
     // Initialize state store
     let state_path = FugueConfig::data_dir().join("state.db");
-    let _state = StateStore::open(&state_path)?;
+    let state = StateStore::open(&state_path)?;
+    let state = Arc::new(Mutex::new(state));
     tracing::info!("state store opened at {}", state_path.display());
+
+    // Load approved plugins
+    let registry_path = FugueConfig::data_dir().join("plugin_registry.json");
+    let runtime_config = RuntimeConfig {
+        max_memory_bytes: config.plugins.memory_limit_bytes as usize,
+        max_fuel: config.plugins.fuel_limit,
+    };
+    let mut plugin_manager =
+        PluginManager::load(&registry_path, runtime_config, Some(state.clone()))?;
 
     // Initialize audit log
     let audit_log = if config.core.audit_enabled {
@@ -89,6 +101,7 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
     println!("Fugue is running");
     println!("  Socket: {}", socket_path.display());
     println!("  Providers: {:?}", provider_manager.list_providers());
+    println!("  Plugins: {} loaded", plugin_manager.loaded_count());
     println!("  Press Ctrl+C to stop");
 
     // Accept IPC connections
@@ -179,16 +192,65 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                     &msg.content[..msg.content.len().min(100)]
                 );
 
-                // Build conversation history from state store
+                // --- Plugin pipeline: on_message (before LLM) ---
+                let (user_content, extra_context) = match plugin_manager.on_message(&msg) {
+                    OnMessageResult::Respond(response) => {
+                        // Plugin short-circuited — send response directly, skip LLM
+                        tracing::info!(
+                            request_id = %msg.request_id,
+                            "plugin responded directly"
+                        );
+                        let route_response = RouteResponse {
+                            channel: msg.channel,
+                            recipient_id: msg.sender_id,
+                            content: response,
+                            reply_to: Some(msg.message_id),
+                            request_id: msg.request_id,
+                        };
+                        if let Err(e) = router.send_response(route_response).await {
+                            tracing::error!("failed to route plugin response: {}", e);
+                        }
+                        continue;
+                    }
+                    OnMessageResult::Continue {
+                        modified_content,
+                        extra_context,
+                    } => {
+                        let content = modified_content.unwrap_or_else(|| msg.content.clone());
+                        (content, extra_context)
+                    }
+                };
+
+                // Build conversation history
                 let history = vec![ChatMessage {
                     role: "user".to_string(),
-                    content: msg.content.clone(),
+                    content: user_content,
                 }];
 
                 // Try to get an LLM response
                 let providers = provider_manager.list_providers();
                 if let Some(provider_name) = providers.first() {
-                    let messages = router.build_llm_messages(&history);
+                    let mut messages = router.build_llm_messages(&history);
+
+                    // Inject plugin context into the system prompt
+                    if !extra_context.is_empty() {
+                        let ctx = extra_context.join("\n");
+                        if let Some(sys_msg) = messages.first_mut() {
+                            if sys_msg.role == "system" {
+                                sys_msg.content.push_str("\n\n");
+                                sys_msg.content.push_str(&ctx);
+                            }
+                        } else {
+                            messages.insert(
+                                0,
+                                ChatMessage {
+                                    role: "system".to_string(),
+                                    content: ctx,
+                                },
+                            );
+                        }
+                    }
+
                     match provider_manager.chat(provider_name, &messages).await {
                         Ok(response) => {
                             tracing::info!(
@@ -196,10 +258,17 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                                 "LLM response: {}",
                                 &response.content[..response.content.len().min(100)]
                             );
+
+                            // --- Plugin pipeline: on_response (after LLM) ---
+                            let result = plugin_manager.on_response(&msg, &response.content);
+                            let final_content = result
+                                .modified_response
+                                .unwrap_or(response.content);
+
                             let route_response = RouteResponse {
                                 channel: msg.channel,
                                 recipient_id: msg.sender_id,
-                                content: response.content,
+                                content: final_content,
                                 reply_to: Some(msg.message_id),
                                 request_id: msg.request_id,
                             };
