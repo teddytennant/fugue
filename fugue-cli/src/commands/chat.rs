@@ -91,7 +91,7 @@ pub async fn run(provider_name: Option<String>, system_prompt: Option<String>) -
 
                 // Trim history to prevent unbounded growth. Keep the system
                 // prompt (if present at index 0) and the most recent messages.
-                let has_system = history.first().map_or(false, |m| m.role == "system");
+                let has_system = history.first().is_some_and(|m| m.role == "system");
                 let non_system_start = if has_system { 1 } else { 0 };
                 let non_system_count = history.len() - non_system_start;
                 if non_system_count > MAX_HISTORY_MESSAGES {

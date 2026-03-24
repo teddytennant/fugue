@@ -31,3 +31,4 @@ pbkdf2 = "0.12"
 dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+wasmtime = { version = "43", default-features = false, features = ["cranelift", "wat", "runtime"] }
