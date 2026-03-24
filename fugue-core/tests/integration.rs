@@ -5,7 +5,7 @@
 use fugue_core::audit::{self, AuditEventType, AuditLog, AuditSeverity};
 use fugue_core::config::{FugueConfig, VaultBackend};
 use fugue_core::ipc::{self, ChatMessage, IpcMessage};
-use fugue_core::plugin::capabilities::{Capability, check_capabilities};
+use fugue_core::plugin::capabilities::{check_capabilities, Capability};
 use fugue_core::plugin::manifest::PluginManifest;
 use fugue_core::plugin::registry::PluginRegistry;
 use fugue_core::provider::ProviderManager;
@@ -47,7 +47,9 @@ backend = "encryptedfile"
         Some(dir.path().join("vault.enc")),
     );
     vault.init_with_key(Vault::generate_key());
-    vault.set("anthropic-api-key", "sk-test-integration-key").unwrap();
+    vault
+        .set("anthropic-api-key", "sk-test-integration-key")
+        .unwrap();
 
     // 3. Register all providers
     let mut pm = ProviderManager::new();
@@ -115,7 +117,11 @@ wasm_file = "echo_tool.wasm"
 "#,
     )
     .unwrap();
-    fs::write(plugin_dir.join("echo_tool.wasm"), b"fake wasm binary content").unwrap();
+    fs::write(
+        plugin_dir.join("echo_tool.wasm"),
+        b"fake wasm binary content",
+    )
+    .unwrap();
 
     // 2. Validate the manifest parses and capabilities are correct
     let manifest = PluginManifest::load(&plugin_dir.join("manifest.toml")).unwrap();
@@ -214,7 +220,9 @@ fn test_state_and_audit_combined() {
 
     // Store some plugin state
     state.kv_set("plugin:echo", "call_count", "42").unwrap();
-    state.kv_set("plugin:echo", "last_caller", "cli-user").unwrap();
+    state
+        .kv_set("plugin:echo", "last_caller", "cli-user")
+        .unwrap();
 
     // Verify conversation history
     let history = state.get_recent_messages("cli", 10).unwrap();
@@ -590,4 +598,152 @@ i_understand_the_risk = true
         let result = FugueConfig::parse(config);
         assert!(result.is_ok(), "config should be accepted: {}", config);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Conversation history — daemon-style message flow
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_conversation_history_builds_llm_context() {
+    let state = StateStore::open_in_memory().unwrap();
+    let mut router = Router::new(16);
+    router.set_system_prompt("You are helpful.".to_string());
+
+    // Simulate a multi-turn conversation being stored
+    state
+        .add_message("cli", "user1", Some("Alice"), "user", "Hello!", None)
+        .unwrap();
+    state
+        .add_message("cli", "assistant", None, "assistant", "Hi there!", None)
+        .unwrap();
+    state
+        .add_message("cli", "user1", Some("Alice"), "user", "What is 2+2?", None)
+        .unwrap();
+    state
+        .add_message("cli", "assistant", None, "assistant", "2+2 = 4", None)
+        .unwrap();
+    state
+        .add_message("cli", "user1", Some("Alice"), "user", "Thanks!", None)
+        .unwrap();
+
+    // Retrieve history and build LLM messages (same flow as start.rs)
+    let history: Vec<ChatMessage> = state
+        .get_recent_messages("cli", 50)
+        .unwrap()
+        .into_iter()
+        .map(|m| ChatMessage {
+            role: m.role,
+            content: m.content,
+        })
+        .collect();
+
+    let messages = router.build_llm_messages(&history);
+
+    // System prompt + 5 conversation messages
+    assert_eq!(messages.len(), 6);
+    assert_eq!(messages[0].role, "system");
+    assert_eq!(messages[0].content, "You are helpful.");
+    assert_eq!(messages[1].role, "user");
+    assert_eq!(messages[1].content, "Hello!");
+    assert_eq!(messages[2].role, "assistant");
+    assert_eq!(messages[2].content, "Hi there!");
+    assert_eq!(messages[5].role, "user");
+    assert_eq!(messages[5].content, "Thanks!");
+}
+
+#[test]
+fn test_conversation_history_respects_limit() {
+    let state = StateStore::open_in_memory().unwrap();
+
+    // Store 20 messages
+    for i in 0..20 {
+        let role = if i % 2 == 0 { "user" } else { "assistant" };
+        state
+            .add_message("cli", "user1", None, role, &format!("msg-{}", i), None)
+            .unwrap();
+    }
+
+    // Retrieve only 5 most recent
+    let history = state.get_recent_messages("cli", 5).unwrap();
+    assert_eq!(history.len(), 5);
+    assert_eq!(history[0].content, "msg-15");
+    assert_eq!(history[4].content, "msg-19");
+}
+
+#[test]
+fn test_conversation_history_channel_isolation() {
+    let state = StateStore::open_in_memory().unwrap();
+
+    // Store messages in different channels
+    state
+        .add_message("telegram", "user-tg", None, "user", "Telegram msg", None)
+        .unwrap();
+    state
+        .add_message(
+            "telegram",
+            "assistant",
+            None,
+            "assistant",
+            "TG response",
+            None,
+        )
+        .unwrap();
+    state
+        .add_message("cli", "user-cli", None, "user", "CLI msg", None)
+        .unwrap();
+    state
+        .add_message("cli", "assistant", None, "assistant", "CLI response", None)
+        .unwrap();
+
+    // Each channel should only see its own messages
+    let tg_history = state.get_recent_messages("telegram", 50).unwrap();
+    let cli_history = state.get_recent_messages("cli", 50).unwrap();
+
+    assert_eq!(tg_history.len(), 2);
+    assert_eq!(cli_history.len(), 2);
+    assert_eq!(tg_history[0].content, "Telegram msg");
+    assert_eq!(cli_history[0].content, "CLI msg");
+}
+
+// ---------------------------------------------------------------------------
+// Config system_prompt and max_history_messages
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_config_with_system_prompt() {
+    let toml_str = r#"
+[core]
+system_prompt = "You are a secure AI assistant for Teddy."
+max_history_messages = 25
+"#;
+    let config = FugueConfig::parse(toml_str).unwrap();
+    assert_eq!(
+        config.core.system_prompt.unwrap(),
+        "You are a secure AI assistant for Teddy."
+    );
+    assert_eq!(config.core.max_history_messages, 25);
+}
+
+#[test]
+fn test_config_defaults_for_history() {
+    let toml_str = "";
+    let config = FugueConfig::parse(toml_str).unwrap();
+    assert!(config.core.system_prompt.is_none());
+    assert_eq!(config.core.max_history_messages, 50);
+}
+
+#[test]
+fn test_config_with_telegram_channel() {
+    let toml_str = r#"
+[channels.telegram]
+type = "telegram"
+credential = "vault:telegram-bot-token"
+allowed_ids = ["123456789", "987654321"]
+"#;
+    let config = FugueConfig::parse(toml_str).unwrap();
+    let tg = config.channels.get("telegram").unwrap();
+    assert_eq!(tg.channel_type, fugue_core::config::ChannelType::Telegram);
+    assert_eq!(tg.credential, Some("vault:telegram-bot-token".to_string()));
+    assert_eq!(tg.allowed_ids.len(), 2);
 }

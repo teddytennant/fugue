@@ -50,10 +50,7 @@ pub enum IpcMessage {
     },
 
     /// LLM response
-    LlmResponse {
-        request_id: String,
-        content: String,
-    },
+    LlmResponse { request_id: String, content: String },
 
     /// Error response
     Error {
@@ -537,7 +534,10 @@ mod tests {
     fn test_decode_frame_empty_input() {
         let result = decode_frame(&[]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("incomplete frame header"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("incomplete frame header"));
     }
 
     #[test]
@@ -608,7 +608,9 @@ mod tests {
             let mut stream = UnixStream::connect(&sock_path_clone).await.unwrap();
             write_message(&mut stream, &IpcMessage::Ping).await.unwrap();
             write_message(&mut stream, &IpcMessage::Pong).await.unwrap();
-            write_message(&mut stream, &IpcMessage::Shutdown).await.unwrap();
+            write_message(&mut stream, &IpcMessage::Shutdown)
+                .await
+                .unwrap();
         });
 
         let (mut stream, _) = listener.accept().await.unwrap();

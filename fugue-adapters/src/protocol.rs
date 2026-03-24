@@ -6,7 +6,6 @@
 use fugue_core::ipc::{self, IpcMessage};
 use tokio::net::UnixStream;
 
-
 /// State machine for the adapter handshake with core
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandshakeState {
@@ -80,6 +79,12 @@ impl AdapterConnection {
                 Err(fugue_core::error::FugueError::Ipc(reason))
             }
         }
+    }
+
+    /// Consume the connection and return the underlying stream.
+    /// Use this when you need to split the stream for bidirectional communication.
+    pub fn into_stream(self) -> UnixStream {
+        self.stream
     }
 
     /// Send a message to the core
@@ -172,7 +177,10 @@ mod tests {
         let msg = ipc::read_message(&mut stream).await.unwrap();
 
         match msg {
-            IpcMessage::Register { adapter_name, adapter_type } => {
+            IpcMessage::Register {
+                adapter_name,
+                adapter_type,
+            } => {
                 assert_eq!(adapter_name, "test-adapter");
                 assert_eq!(adapter_type, "cli");
             }
@@ -242,7 +250,10 @@ mod tests {
 
             let result = conn.handshake().await;
             assert!(result.is_err());
-            assert!(result.unwrap_err().to_string().contains("unexpected response"));
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("unexpected response"));
         });
 
         let (mut stream, _) = listener.accept().await.unwrap();
@@ -337,7 +348,9 @@ mod tests {
         let msg = ipc::read_message(&mut stream).await.unwrap();
         assert!(matches!(msg, IpcMessage::Ping));
 
-        ipc::write_message(&mut stream, &IpcMessage::Pong).await.unwrap();
+        ipc::write_message(&mut stream, &IpcMessage::Pong)
+            .await
+            .unwrap();
 
         client.await.unwrap();
     }

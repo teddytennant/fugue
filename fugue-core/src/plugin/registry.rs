@@ -50,11 +50,7 @@ impl PluginRegistry {
     }
 
     /// Install a plugin from its manifest directory
-    pub fn install(
-        &mut self,
-        manifest_path: &Path,
-        _plugin_dir: &Path,
-    ) -> Result<&PluginEntry> {
+    pub fn install(&mut self, manifest_path: &Path, _plugin_dir: &Path) -> Result<&PluginEntry> {
         let manifest = PluginManifest::load(manifest_path)?;
         let manifest_dir = manifest_path.parent().ok_or_else(|| {
             FugueError::Plugin("manifest path has no parent directory".to_string())
@@ -106,9 +102,10 @@ impl PluginRegistry {
 
     /// Approve a plugin with specific capabilities
     pub fn approve(&mut self, name: &str, capabilities: Vec<String>) -> Result<()> {
-        let entry = self.plugins.get_mut(name).ok_or_else(|| {
-            FugueError::Plugin(format!("plugin '{}' not found", name))
-        })?;
+        let entry = self
+            .plugins
+            .get_mut(name)
+            .ok_or_else(|| FugueError::Plugin(format!("plugin '{}' not found", name)))?;
         entry.approved = true;
         entry.granted_capabilities = capabilities;
         Ok(())
@@ -116,9 +113,10 @@ impl PluginRegistry {
 
     /// Revoke a plugin's approval
     pub fn revoke(&mut self, name: &str) -> Result<()> {
-        let entry = self.plugins.get_mut(name).ok_or_else(|| {
-            FugueError::Plugin(format!("plugin '{}' not found", name))
-        })?;
+        let entry = self
+            .plugins
+            .get_mut(name)
+            .ok_or_else(|| FugueError::Plugin(format!("plugin '{}' not found", name)))?;
         entry.approved = false;
         entry.granted_capabilities.clear();
         Ok(())
@@ -126,9 +124,10 @@ impl PluginRegistry {
 
     /// Check if a plugin's binary has changed since approval
     pub fn verify_binary(&self, name: &str) -> Result<bool> {
-        let entry = self.plugins.get(name).ok_or_else(|| {
-            FugueError::Plugin(format!("plugin '{}' not found", name))
-        })?;
+        let entry = self
+            .plugins
+            .get(name)
+            .ok_or_else(|| FugueError::Plugin(format!("plugin '{}' not found", name)))?;
 
         let current_hash = hash_file(&entry.wasm_path)?;
         Ok(current_hash == entry.binary_hash)
@@ -136,9 +135,10 @@ impl PluginRegistry {
 
     /// Update the stored hash for a plugin (after re-approval)
     pub fn update_hash(&mut self, name: &str) -> Result<()> {
-        let entry = self.plugins.get_mut(name).ok_or_else(|| {
-            FugueError::Plugin(format!("plugin '{}' not found", name))
-        })?;
+        let entry = self
+            .plugins
+            .get_mut(name)
+            .ok_or_else(|| FugueError::Plugin(format!("plugin '{}' not found", name)))?;
         entry.binary_hash = hash_file(&entry.wasm_path)?;
         Ok(())
     }
@@ -146,9 +146,8 @@ impl PluginRegistry {
 
 /// Hash a file with BLAKE3
 fn hash_file(path: &Path) -> Result<String> {
-    let data = std::fs::read(path).map_err(|e| {
-        FugueError::Plugin(format!("failed to read {}: {}", path.display(), e))
-    })?;
+    let data = std::fs::read(path)
+        .map_err(|e| FugueError::Plugin(format!("failed to read {}: {}", path.display(), e)))?;
     Ok(blake3::hash(&data).to_hex().to_string())
 }
 
@@ -226,10 +225,7 @@ wasm_file = "echo_tool.wasm"
         registry.install(&manifest_path, dir.path()).unwrap();
 
         registry
-            .approve(
-                "echo-tool",
-                vec!["ipc:messages".to_string()],
-            )
+            .approve("echo-tool", vec!["ipc:messages".to_string()])
             .unwrap();
 
         let entry = registry.get("echo-tool").unwrap();

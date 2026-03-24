@@ -6,8 +6,10 @@ pub mod manifest;
 pub mod registry;
 pub mod runtime;
 
-pub use capabilities::{Capability, RiskLevel, check_capabilities};
+pub use capabilities::{check_capabilities, Capability, RiskLevel};
 pub use manager::{OnMessageResult, OnResponseResult, PluginManager};
 pub use manifest::PluginManifest;
 pub use registry::{PluginEntry, PluginRegistry};
-pub use runtime::{CompiledPlugin, LogEntry, LogLevel, PluginEngine, PluginInstance, RuntimeConfig};
+pub use runtime::{
+    CompiledPlugin, LogEntry, LogLevel, PluginEngine, PluginInstance, RuntimeConfig,
+};

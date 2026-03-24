@@ -88,7 +88,9 @@ struct PluginCtx {
 
 impl PluginCtx {
     fn has_capability(&self, cap: &Capability) -> bool {
-        self.capabilities.iter().any(|granted| granted.satisfies(cap))
+        self.capabilities
+            .iter()
+            .any(|granted| granted.satisfies(cap))
     }
 }
 
@@ -142,7 +144,10 @@ impl PluginEngine {
     /// Compile a plugin from a registry entry (loads WASM from disk)
     pub fn compile_entry(&self, entry: &PluginEntry) -> Result<CompiledPlugin> {
         let wasm_bytes = std::fs::read(&entry.wasm_path).map_err(|e| {
-            FugueError::Plugin(format!("failed to read '{}': {e}", entry.wasm_path.display()))
+            FugueError::Plugin(format!(
+                "failed to read '{}': {e}",
+                entry.wasm_path.display()
+            ))
         })?;
         self.compile(&entry.name, &wasm_bytes)
     }
@@ -179,7 +184,9 @@ impl PluginEngine {
 
         let instance = linker
             .instantiate(&mut store, &compiled.module)
-            .map_err(|e| FugueError::Plugin(format!("failed to instantiate '{}': {e}", compiled.name)))?;
+            .map_err(|e| {
+                FugueError::Plugin(format!("failed to instantiate '{}': {e}", compiled.name))
+            })?;
 
         Self::validate_exports(&instance, &mut store, &compiled.name)?;
 
@@ -228,11 +235,11 @@ impl PluginEngine {
                         return -2;
                     }
 
-                    let (ns, key) = match read_two_strings(&mut caller, ns_ptr, ns_len, key_ptr, key_len)
-                    {
-                        Some(v) => v,
-                        None => return -3,
-                    };
+                    let (ns, key) =
+                        match read_two_strings(&mut caller, ns_ptr, ns_len, key_ptr, key_len) {
+                            Some(v) => v,
+                            None => return -3,
+                        };
 
                     let state = match caller.data().state.clone() {
                         Some(s) => s,
@@ -350,11 +357,11 @@ impl PluginEngine {
                         return -2;
                     }
 
-                    let (ns, key) = match read_two_strings(&mut caller, ns_ptr, ns_len, key_ptr, key_len)
-                    {
-                        Some(v) => v,
-                        None => return -1,
-                    };
+                    let (ns, key) =
+                        match read_two_strings(&mut caller, ns_ptr, ns_len, key_ptr, key_len) {
+                            Some(v) => v,
+                            None => return -1,
+                        };
 
                     let state = match caller.data().state.clone() {
                         Some(s) => s,
@@ -479,7 +486,9 @@ impl PluginInstance {
         let rend = rstart + result_len as usize;
         let data = memory.data(&self.store);
         if rend > data.len() {
-            return Err(FugueError::Plugin("result pointer exceeds guest memory".into()));
+            return Err(FugueError::Plugin(
+                "result pointer exceeds guest memory".into(),
+            ));
         }
 
         let result_str = std::str::from_utf8(&data[rstart..rend])
@@ -803,9 +812,7 @@ mod tests {
     fn test_instantiate_echo() {
         let engine = default_engine();
         let compiled = engine.compile("echo", ECHO_WAT.as_bytes()).unwrap();
-        let _instance = engine
-            .instantiate(&compiled, HashSet::new(), None)
-            .unwrap();
+        let _instance = engine.instantiate(&compiled, HashSet::new(), None).unwrap();
     }
 
     #[test]
@@ -821,7 +828,9 @@ mod tests {
     #[test]
     fn test_instantiate_missing_handle() {
         let engine = default_engine();
-        let compiled = engine.compile("no-handle", NO_HANDLE_WAT.as_bytes()).unwrap();
+        let compiled = engine
+            .compile("no-handle", NO_HANDLE_WAT.as_bytes())
+            .unwrap();
         let result = engine.instantiate(&compiled, HashSet::new(), None);
         let err = result.err().unwrap().to_string();
         assert!(err.contains("fugue_handle"), "unexpected error: {err}");
@@ -833,11 +842,11 @@ mod tests {
     fn test_echo_handle() {
         let engine = default_engine();
         let compiled = engine.compile("echo", ECHO_WAT.as_bytes()).unwrap();
-        let mut instance = engine
-            .instantiate(&compiled, HashSet::new(), None)
-            .unwrap();
+        let mut instance = engine.instantiate(&compiled, HashSet::new(), None).unwrap();
 
-        let result = instance.handle(r#"{"name":"echo","arguments":{"msg":"hi"}}"#).unwrap();
+        let result = instance
+            .handle(r#"{"name":"echo","arguments":{"msg":"hi"}}"#)
+            .unwrap();
         assert_eq!(result, r#"{"name":"echo","arguments":{"msg":"hi"}}"#);
     }
 
@@ -845,9 +854,7 @@ mod tests {
     fn test_echo_multiple_invocations() {
         let engine = default_engine();
         let compiled = engine.compile("echo", ECHO_WAT.as_bytes()).unwrap();
-        let mut instance = engine
-            .instantiate(&compiled, HashSet::new(), None)
-            .unwrap();
+        let mut instance = engine.instantiate(&compiled, HashSet::new(), None).unwrap();
 
         for i in 0..5 {
             let input = format!("input-{i}");
@@ -862,15 +869,10 @@ mod tests {
         let compiled = engine
             .compile("fixed", FIXED_RESPONSE_WAT.as_bytes())
             .unwrap();
-        let mut instance = engine
-            .instantiate(&compiled, HashSet::new(), None)
-            .unwrap();
+        let mut instance = engine.instantiate(&compiled, HashSet::new(), None).unwrap();
 
         let result = instance.handle("anything").unwrap();
-        assert_eq!(
-            result,
-            r#"{"success":true,"output":"ok","error":null}"#
-        );
+        assert_eq!(result, r#"{"success":true,"output":"ok","error":null}"#);
     }
 
     // --- Logging tests ---
@@ -879,9 +881,7 @@ mod tests {
     fn test_host_logging() {
         let engine = default_engine();
         let compiled = engine.compile("log", LOGGING_WAT.as_bytes()).unwrap();
-        let mut instance = engine
-            .instantiate(&compiled, HashSet::new(), None)
-            .unwrap();
+        let mut instance = engine.instantiate(&compiled, HashSet::new(), None).unwrap();
 
         let _result = instance.handle("test").unwrap();
         let logs = instance.take_logs();
@@ -895,9 +895,7 @@ mod tests {
     fn test_logs_cleared_between_invocations() {
         let engine = default_engine();
         let compiled = engine.compile("log", LOGGING_WAT.as_bytes()).unwrap();
-        let mut instance = engine
-            .instantiate(&compiled, HashSet::new(), None)
-            .unwrap();
+        let mut instance = engine.instantiate(&compiled, HashSet::new(), None).unwrap();
 
         instance.handle("first").unwrap();
         assert_eq!(instance.take_logs().len(), 1);
@@ -928,7 +926,10 @@ mod tests {
 
         // Verify state was actually persisted
         let store = state.lock().unwrap();
-        assert_eq!(store.kv_get("ns", "key").unwrap(), Some("hello".to_string()));
+        assert_eq!(
+            store.kv_get("ns", "key").unwrap(),
+            Some("hello".to_string())
+        );
     }
 
     #[test]
@@ -984,9 +985,7 @@ mod tests {
     fn test_infinite_loop_fuel_exhaustion() {
         let engine = small_fuel_engine();
         let compiled = engine.compile("inf", INFINITE_WAT.as_bytes()).unwrap();
-        let mut instance = engine
-            .instantiate(&compiled, HashSet::new(), None)
-            .unwrap();
+        let mut instance = engine.instantiate(&compiled, HashSet::new(), None).unwrap();
 
         let result = instance.handle("test");
         let err = result.err().unwrap().to_string();
@@ -1005,9 +1004,7 @@ mod tests {
     fn test_fuel_resets_between_invocations() {
         let engine = default_engine();
         let compiled = engine.compile("echo", ECHO_WAT.as_bytes()).unwrap();
-        let mut instance = engine
-            .instantiate(&compiled, HashSet::new(), None)
-            .unwrap();
+        let mut instance = engine.instantiate(&compiled, HashSet::new(), None).unwrap();
 
         instance.handle("first").unwrap();
         let fuel_after_first = instance.fuel_remaining();
@@ -1030,9 +1027,7 @@ mod tests {
     fn test_empty_input() {
         let engine = default_engine();
         let compiled = engine.compile("echo", ECHO_WAT.as_bytes()).unwrap();
-        let mut instance = engine
-            .instantiate(&compiled, HashSet::new(), None)
-            .unwrap();
+        let mut instance = engine.instantiate(&compiled, HashSet::new(), None).unwrap();
 
         let result = instance.handle("").unwrap();
         assert_eq!(result, "");
@@ -1042,9 +1037,7 @@ mod tests {
     fn test_large_input() {
         let engine = default_engine();
         let compiled = engine.compile("echo", ECHO_WAT.as_bytes()).unwrap();
-        let mut instance = engine
-            .instantiate(&compiled, HashSet::new(), None)
-            .unwrap();
+        let mut instance = engine.instantiate(&compiled, HashSet::new(), None).unwrap();
 
         let large = "x".repeat(50_000);
         let result = instance.handle(&large).unwrap();
@@ -1055,9 +1048,7 @@ mod tests {
     fn test_unicode_input() {
         let engine = default_engine();
         let compiled = engine.compile("echo", ECHO_WAT.as_bytes()).unwrap();
-        let mut instance = engine
-            .instantiate(&compiled, HashSet::new(), None)
-            .unwrap();
+        let mut instance = engine.instantiate(&compiled, HashSet::new(), None).unwrap();
 
         let input = "\u{1F680}\u{1F30D} hello \u{4E16}\u{754C}";
         let result = instance.handle(input).unwrap();

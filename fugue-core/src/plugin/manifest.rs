@@ -29,26 +29,23 @@ pub struct PluginMeta {
 impl PluginManifest {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path).map_err(|e| {
-            FugueError::Plugin(format!(
-                "failed to read manifest {}: {}",
-                path.display(),
-                e
-            ))
+            FugueError::Plugin(format!("failed to read manifest {}: {}", path.display(), e))
         })?;
         Self::parse(&content)
     }
 
     pub fn parse(content: &str) -> Result<Self> {
-        let manifest: PluginManifest = toml::from_str(content).map_err(|e| {
-            FugueError::Plugin(format!("failed to parse manifest: {}", e))
-        })?;
+        let manifest: PluginManifest = toml::from_str(content)
+            .map_err(|e| FugueError::Plugin(format!("failed to parse manifest: {}", e)))?;
         manifest.validate()?;
         Ok(manifest)
     }
 
     pub fn validate(&self) -> Result<()> {
         if self.plugin.name.is_empty() {
-            return Err(FugueError::Plugin("plugin name cannot be empty".to_string()));
+            return Err(FugueError::Plugin(
+                "plugin name cannot be empty".to_string(),
+            ));
         }
 
         if self.plugin.name.contains('/')
@@ -373,7 +370,10 @@ wasm_file = "test.wasm"
 "#;
         let result = PluginManifest::parse(toml_str);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid path characters"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid path characters"));
     }
 
     #[test]
@@ -387,7 +387,10 @@ wasm_file = "test.wasm"
 "#;
         let result = PluginManifest::parse(toml_str);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid path characters"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid path characters"));
     }
 
     #[test]
@@ -401,7 +404,10 @@ wasm_file = "../../etc/passwd"
 "#;
         let result = PluginManifest::parse(toml_str);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid path characters"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid path characters"));
     }
 
     #[test]
@@ -415,6 +421,9 @@ wasm_file = "/etc/passwd"
 "#;
         let result = PluginManifest::parse(toml_str);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid path characters"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid path characters"));
     }
 }

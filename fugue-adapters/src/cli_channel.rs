@@ -3,7 +3,7 @@
 //! CLI channel adapter — provides an interactive terminal chat interface.
 //! Unlike other adapters, this runs in-process (no separate Unix socket needed).
 
-use fugue_core::router::{RouteResponse, RoutableMessage};
+use fugue_core::router::{RoutableMessage, RouteResponse};
 use tokio::sync::mpsc;
 
 /// Run the CLI channel adapter in-process

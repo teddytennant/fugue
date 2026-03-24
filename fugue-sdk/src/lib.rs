@@ -126,9 +126,7 @@ mod tests {
         }
 
         fn execute(&mut self, call: ToolCall) -> ToolResult {
-            let message = call.arguments["message"]
-                .as_str()
-                .unwrap_or("(no message)");
+            let message = call.arguments["message"].as_str().unwrap_or("(no message)");
             ToolResult::ok(message)
         }
     }
@@ -181,9 +179,15 @@ mod tests {
     fn test_all_capability_display_variants() {
         let cases = vec![
             (PluginCapability::FsRead(None), "fs:read"),
-            (PluginCapability::FsRead(Some("/tmp".to_string())), "fs:read:/tmp"),
+            (
+                PluginCapability::FsRead(Some("/tmp".to_string())),
+                "fs:read:/tmp",
+            ),
             (PluginCapability::FsWrite(None), "fs:write"),
-            (PluginCapability::FsWrite(Some("/var".to_string())), "fs:write:/var"),
+            (
+                PluginCapability::FsWrite(Some("/var".to_string())),
+                "fs:write:/var",
+            ),
             (PluginCapability::NetOutbound(None), "net:outbound"),
             (PluginCapability::LlmCall, "llm:call"),
             (PluginCapability::StateRead, "state:read"),
@@ -270,7 +274,10 @@ mod tests {
 
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["message"].is_object());
-        assert!(schema["required"].as_array().unwrap().contains(&serde_json::json!("message")));
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("message")));
     }
 
     // A second tool implementation for testing the trait with error handling

@@ -249,13 +249,11 @@ impl AuditEventRaw {
             .map(|dt| dt.with_timezone(&Utc))
             .map_err(|e| format!("invalid timestamp: {}", e))?;
 
-        let event_type: AuditEventType =
-            serde_json::from_str(&format!("\"{}\"", self.event_type))
-                .map_err(|e| format!("invalid event type: {}", e))?;
+        let event_type: AuditEventType = serde_json::from_str(&format!("\"{}\"", self.event_type))
+            .map_err(|e| format!("invalid event type: {}", e))?;
 
-        let severity: AuditSeverity =
-            serde_json::from_str(&format!("\"{}\"", self.severity))
-                .map_err(|e| format!("invalid severity: {}", e))?;
+        let severity: AuditSeverity = serde_json::from_str(&format!("\"{}\"", self.severity))
+            .map_err(|e| format!("invalid severity: {}", e))?;
 
         Ok(AuditEvent {
             id: Some(self.id),

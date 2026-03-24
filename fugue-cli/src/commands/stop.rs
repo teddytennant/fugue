@@ -13,13 +13,16 @@ pub async fn run() -> Result<()> {
     let socket_path = &config.core.socket_path;
 
     if !socket_path.exists() {
-        eprintln!("Fugue is not running (no socket at {})", socket_path.display());
+        eprintln!(
+            "Fugue is not running (no socket at {})",
+            socket_path.display()
+        );
         std::process::exit(1);
     }
 
-    let mut stream = UnixStream::connect(socket_path).await.map_err(|e| {
-        anyhow::anyhow!("failed to connect to fugue: {} (is it running?)", e)
-    })?;
+    let mut stream = UnixStream::connect(socket_path)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to connect to fugue: {} (is it running?)", e))?;
 
     ipc::write_message(&mut stream, &IpcMessage::Shutdown).await?;
     println!("Shutdown signal sent");

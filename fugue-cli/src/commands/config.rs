@@ -5,10 +5,7 @@ pub async fn init(force: bool) -> Result<()> {
     let config_path = FugueConfig::default_config_path();
 
     if config_path.exists() && !force {
-        eprintln!(
-            "Config file already exists at {}",
-            config_path.display()
-        );
+        eprintln!("Config file already exists at {}", config_path.display());
         eprintln!("Use --force to overwrite");
         std::process::exit(1);
     }
@@ -27,7 +24,10 @@ pub async fn init(force: bool) -> Result<()> {
     println!("  - Bind address: 127.0.0.1 (localhost only)");
     println!("  - Vault backend: encrypted file");
     println!("  - Audit logging: enabled");
-    println!("\nEdit {} to configure providers and channels.", config_path.display());
+    println!(
+        "\nEdit {} to configure providers and channels.",
+        config_path.display()
+    );
 
     Ok(())
 }

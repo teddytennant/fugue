@@ -33,7 +33,11 @@ fn classify_http_error(status: reqwest::StatusCode, provider: &str, body: &str) 
 
     FugueError::Provider(format!(
         "{} API error: {} {} - {}. Response: {}",
-        provider, code, category, status.canonical_reason().unwrap_or("Unknown"), body
+        provider,
+        code,
+        category,
+        status.canonical_reason().unwrap_or("Unknown"),
+        body
     ))
 }
 
@@ -100,11 +104,7 @@ impl ProviderManager {
     }
 
     /// Send a chat completion request to the named provider
-    pub async fn chat(
-        &self,
-        provider_name: &str,
-        messages: &[ChatMessage],
-    ) -> Result<LlmResponse> {
+    pub async fn chat(&self, provider_name: &str, messages: &[ChatMessage]) -> Result<LlmResponse> {
         let (_, config, api_key) = self
             .providers
             .iter()
@@ -119,15 +119,15 @@ impl ProviderManager {
                 self.chat_anthropic(config, api_key.as_deref(), messages)
                     .await
             }
-            ProviderType::OpenAI => {
-                self.chat_openai(config, api_key.as_deref(), messages)
-                    .await
-            }
+            ProviderType::OpenAI => self.chat_openai(config, api_key.as_deref(), messages).await,
         }
     }
 
     pub fn list_providers(&self) -> Vec<&str> {
-        self.providers.iter().map(|(name, _, _)| name.as_str()).collect()
+        self.providers
+            .iter()
+            .map(|(name, _, _)| name.as_str())
+            .collect()
     }
 
     async fn chat_ollama(
@@ -417,11 +417,7 @@ mod tests {
 
     #[test]
     fn test_classify_http_error_forbidden() {
-        let err = classify_http_error(
-            reqwest::StatusCode::FORBIDDEN,
-            "Anthropic",
-            "forbidden",
-        );
+        let err = classify_http_error(reqwest::StatusCode::FORBIDDEN, "Anthropic", "forbidden");
         let msg = err.to_string();
         assert!(msg.contains("403"));
         assert!(msg.contains("forbidden"));
@@ -430,11 +426,7 @@ mod tests {
 
     #[test]
     fn test_classify_http_error_not_found() {
-        let err = classify_http_error(
-            reqwest::StatusCode::NOT_FOUND,
-            "Ollama",
-            "model not found",
-        );
+        let err = classify_http_error(reqwest::StatusCode::NOT_FOUND, "Ollama", "model not found");
         let msg = err.to_string();
         assert!(msg.contains("404"));
         assert!(msg.contains("not found"));
@@ -442,11 +434,7 @@ mod tests {
 
     #[test]
     fn test_classify_http_error_bad_gateway() {
-        let err = classify_http_error(
-            reqwest::StatusCode::BAD_GATEWAY,
-            "OpenAI",
-            "",
-        );
+        let err = classify_http_error(reqwest::StatusCode::BAD_GATEWAY, "OpenAI", "");
         let msg = err.to_string();
         assert!(msg.contains("502"));
         assert!(msg.contains("bad gateway"));
@@ -483,7 +471,8 @@ mod tests {
         };
 
         pm.register("ollama".to_string(), ollama, None).unwrap();
-        pm.register("anthropic".to_string(), anthropic, None).unwrap();
+        pm.register("anthropic".to_string(), anthropic, None)
+            .unwrap();
 
         let providers = pm.list_providers();
         assert_eq!(providers.len(), 2);
@@ -530,7 +519,8 @@ mod tests {
             extra: Default::default(),
         };
 
-        pm.register("anthropic".to_string(), config, Some(&vault)).unwrap();
+        pm.register("anthropic".to_string(), config, Some(&vault))
+            .unwrap();
         assert_eq!(pm.list_providers(), vec!["anthropic"]);
     }
 

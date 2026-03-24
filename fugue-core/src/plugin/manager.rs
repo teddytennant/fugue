@@ -58,8 +58,13 @@ struct LoadedPlugin {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum PipelineInput<'a> {
-    OnMessage { message: MessageData<'a> },
-    OnResponse { message: MessageData<'a>, response: &'a str },
+    OnMessage {
+        message: MessageData<'a>,
+    },
+    OnResponse {
+        message: MessageData<'a>,
+        response: &'a str,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -770,9 +775,7 @@ mod tests {
         let compiled = engine
             .compile("second", PASSTHROUGH_WAT.as_bytes())
             .unwrap();
-        let instance = engine
-            .instantiate(&compiled, HashSet::new(), None)
-            .unwrap();
+        let instance = engine.instantiate(&compiled, HashSet::new(), None).unwrap();
         let p2 = LoadedPlugin {
             name: "second".to_string(),
             instance,
@@ -795,8 +798,7 @@ mod tests {
         let registry_path = dir.path().join("registry.json");
         // Don't create the file — load() handles missing files
 
-        let mgr =
-            PluginManager::load(&registry_path, RuntimeConfig::default(), None).unwrap();
+        let mgr = PluginManager::load(&registry_path, RuntimeConfig::default(), None).unwrap();
         assert_eq!(mgr.loaded_count(), 0);
     }
 
@@ -822,11 +824,7 @@ wasm_file = "plugin.wasm"
         )
         .unwrap();
         // Write valid WAT as the WASM binary (wasmtime accepts WAT)
-        std::fs::write(
-            plugin_dir.join("plugin.wasm"),
-            PASSTHROUGH_WAT.as_bytes(),
-        )
-        .unwrap();
+        std::fs::write(plugin_dir.join("plugin.wasm"), PASSTHROUGH_WAT.as_bytes()).unwrap();
 
         // Install but DON'T approve
         let mut registry = PluginRegistry::new();
@@ -835,8 +833,7 @@ wasm_file = "plugin.wasm"
             .unwrap();
         registry.save(&registry_path).unwrap();
 
-        let mgr =
-            PluginManager::load(&registry_path, RuntimeConfig::default(), None).unwrap();
+        let mgr = PluginManager::load(&registry_path, RuntimeConfig::default(), None).unwrap();
         assert_eq!(mgr.loaded_count(), 0);
     }
 
@@ -860,11 +857,7 @@ wasm_file = "plugin.wasm"
 "#,
         )
         .unwrap();
-        std::fs::write(
-            plugin_dir.join("plugin.wasm"),
-            PASSTHROUGH_WAT.as_bytes(),
-        )
-        .unwrap();
+        std::fs::write(plugin_dir.join("plugin.wasm"), PASSTHROUGH_WAT.as_bytes()).unwrap();
 
         let mut registry = PluginRegistry::new();
         registry
@@ -876,14 +869,9 @@ wasm_file = "plugin.wasm"
         registry.save(&registry_path).unwrap();
 
         // Tamper with the binary after approval
-        std::fs::write(
-            plugin_dir.join("plugin.wasm"),
-            b"tampered content",
-        )
-        .unwrap();
+        std::fs::write(plugin_dir.join("plugin.wasm"), b"tampered content").unwrap();
 
-        let mgr =
-            PluginManager::load(&registry_path, RuntimeConfig::default(), None).unwrap();
+        let mgr = PluginManager::load(&registry_path, RuntimeConfig::default(), None).unwrap();
         assert_eq!(mgr.loaded_count(), 0);
     }
 
@@ -907,11 +895,7 @@ wasm_file = "plugin.wasm"
 "#,
         )
         .unwrap();
-        std::fs::write(
-            plugin_dir.join("plugin.wasm"),
-            PASSTHROUGH_WAT.as_bytes(),
-        )
-        .unwrap();
+        std::fs::write(plugin_dir.join("plugin.wasm"), PASSTHROUGH_WAT.as_bytes()).unwrap();
 
         let mut registry = PluginRegistry::new();
         registry
@@ -922,8 +906,7 @@ wasm_file = "plugin.wasm"
             .unwrap();
         registry.save(&registry_path).unwrap();
 
-        let mgr =
-            PluginManager::load(&registry_path, RuntimeConfig::default(), None).unwrap();
+        let mgr = PluginManager::load(&registry_path, RuntimeConfig::default(), None).unwrap();
         assert_eq!(mgr.loaded_count(), 1);
         assert_eq!(mgr.plugin_names(), vec!["my-plugin"]);
     }
@@ -948,11 +931,7 @@ wasm_file = "plugin.wasm"
 "#,
         )
         .unwrap();
-        std::fs::write(
-            plugin_dir.join("plugin.wasm"),
-            PASSTHROUGH_WAT.as_bytes(),
-        )
-        .unwrap();
+        std::fs::write(plugin_dir.join("plugin.wasm"), PASSTHROUGH_WAT.as_bytes()).unwrap();
 
         let mut registry = PluginRegistry::new();
         registry

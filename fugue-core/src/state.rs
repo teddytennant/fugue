@@ -242,17 +242,29 @@ mod tests {
         store.kv_set("ns1", "key", "value1").unwrap();
         store.kv_set("ns2", "key", "value2").unwrap();
 
-        assert_eq!(store.kv_get("ns1", "key").unwrap(), Some("value1".to_string()));
-        assert_eq!(store.kv_get("ns2", "key").unwrap(), Some("value2".to_string()));
+        assert_eq!(
+            store.kv_get("ns1", "key").unwrap(),
+            Some("value1".to_string())
+        );
+        assert_eq!(
+            store.kv_get("ns2", "key").unwrap(),
+            Some("value2".to_string())
+        );
     }
 
     #[test]
     fn test_add_and_get_messages() {
         let store = StateStore::open_in_memory().unwrap();
 
-        store.add_message("cli", "user1", Some("Alice"), "user", "Hello!", None).unwrap();
-        store.add_message("cli", "assistant", None, "assistant", "Hi there!", None).unwrap();
-        store.add_message("cli", "user1", Some("Alice"), "user", "How are you?", None).unwrap();
+        store
+            .add_message("cli", "user1", Some("Alice"), "user", "Hello!", None)
+            .unwrap();
+        store
+            .add_message("cli", "assistant", None, "assistant", "Hi there!", None)
+            .unwrap();
+        store
+            .add_message("cli", "user1", Some("Alice"), "user", "How are you?", None)
+            .unwrap();
 
         let messages = store.get_recent_messages("cli", 10).unwrap();
         assert_eq!(messages.len(), 3);
@@ -266,7 +278,9 @@ mod tests {
         let store = StateStore::open_in_memory().unwrap();
 
         for i in 0..10 {
-            store.add_message("cli", "user1", None, "user", &format!("msg {}", i), None).unwrap();
+            store
+                .add_message("cli", "user1", None, "user", &format!("msg {}", i), None)
+                .unwrap();
         }
 
         let messages = store.get_recent_messages("cli", 3).unwrap();
@@ -280,8 +294,12 @@ mod tests {
     fn test_channel_isolation() {
         let store = StateStore::open_in_memory().unwrap();
 
-        store.add_message("cli", "user", None, "user", "cli msg", None).unwrap();
-        store.add_message("telegram", "user", None, "user", "tg msg", None).unwrap();
+        store
+            .add_message("cli", "user", None, "user", "cli msg", None)
+            .unwrap();
+        store
+            .add_message("telegram", "user", None, "user", "tg msg", None)
+            .unwrap();
 
         let cli_msgs = store.get_recent_messages("cli", 10).unwrap();
         assert_eq!(cli_msgs.len(), 1);
@@ -296,8 +314,12 @@ mod tests {
     fn test_clear_channel_history() {
         let store = StateStore::open_in_memory().unwrap();
 
-        store.add_message("cli", "user", None, "user", "msg1", None).unwrap();
-        store.add_message("cli", "user", None, "user", "msg2", None).unwrap();
+        store
+            .add_message("cli", "user", None, "user", "msg1", None)
+            .unwrap();
+        store
+            .add_message("cli", "user", None, "user", "msg2", None)
+            .unwrap();
 
         let count = store.clear_channel_history("cli").unwrap();
         assert_eq!(count, 2);
@@ -334,7 +356,9 @@ mod tests {
     #[test]
     fn test_kv_unicode_keys_and_values() {
         let store = StateStore::open_in_memory().unwrap();
-        store.kv_set("\u{1F600}", "\u{4E16}\u{754C}", "\u{1F310}").unwrap();
+        store
+            .kv_set("\u{1F600}", "\u{4E16}\u{754C}", "\u{1F310}")
+            .unwrap();
         let value = store.kv_get("\u{1F600}", "\u{4E16}\u{754C}").unwrap();
         assert_eq!(value, Some("\u{1F310}".to_string()));
     }
@@ -359,7 +383,14 @@ mod tests {
     fn test_messages_with_message_id() {
         let store = StateStore::open_in_memory().unwrap();
         let id = store
-            .add_message("cli", "user1", Some("Alice"), "user", "Hello!", Some("msg-123"))
+            .add_message(
+                "cli",
+                "user1",
+                Some("Alice"),
+                "user",
+                "Hello!",
+                Some("msg-123"),
+            )
             .unwrap();
         assert!(id > 0);
 
@@ -425,8 +456,12 @@ mod tests {
     #[test]
     fn test_clear_does_not_affect_other_channels() {
         let store = StateStore::open_in_memory().unwrap();
-        store.add_message("cli", "user", None, "user", "cli msg", None).unwrap();
-        store.add_message("telegram", "user", None, "user", "tg msg", None).unwrap();
+        store
+            .add_message("cli", "user", None, "user", "cli msg", None)
+            .unwrap();
+        store
+            .add_message("telegram", "user", None, "user", "tg msg", None)
+            .unwrap();
 
         store.clear_channel_history("cli").unwrap();
 
@@ -440,9 +475,15 @@ mod tests {
     #[test]
     fn test_add_message_returns_incrementing_ids() {
         let store = StateStore::open_in_memory().unwrap();
-        let id1 = store.add_message("cli", "user", None, "user", "msg1", None).unwrap();
-        let id2 = store.add_message("cli", "user", None, "user", "msg2", None).unwrap();
-        let id3 = store.add_message("cli", "user", None, "user", "msg3", None).unwrap();
+        let id1 = store
+            .add_message("cli", "user", None, "user", "msg1", None)
+            .unwrap();
+        let id2 = store
+            .add_message("cli", "user", None, "user", "msg2", None)
+            .unwrap();
+        let id3 = store
+            .add_message("cli", "user", None, "user", "msg3", None)
+            .unwrap();
 
         assert!(id2 > id1);
         assert!(id3 > id2);
@@ -462,7 +503,9 @@ mod tests {
     fn test_kv_many_namespaces() {
         let store = StateStore::open_in_memory().unwrap();
         for i in 0..100 {
-            store.kv_set(&format!("ns-{}", i), "key", &format!("val-{}", i)).unwrap();
+            store
+                .kv_set(&format!("ns-{}", i), "key", &format!("val-{}", i))
+                .unwrap();
         }
 
         for i in 0..100 {

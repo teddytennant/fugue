@@ -1,4 +1,5 @@
 #![deny(unsafe_code)]
 
-pub mod protocol;
 pub mod cli_channel;
+pub mod protocol;
+pub mod telegram;

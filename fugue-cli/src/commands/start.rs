@@ -40,9 +40,7 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.core.log_level));
 
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     tracing::info!("starting fugue");
 
@@ -98,6 +96,14 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
     // Initialize router
     let mut router = Router::new(256);
 
+    // Set system prompt from config
+    if let Some(ref prompt) = config.core.system_prompt {
+        router.set_system_prompt(prompt.clone());
+        tracing::info!("system prompt set ({} chars)", prompt.len());
+    }
+
+    let max_history = config.core.max_history_messages;
+
     // Shared response channels for bidirectional communication
     let response_channels: ResponseChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
@@ -109,6 +115,56 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
     println!("  Socket: {}", socket_path.display());
     println!("  Providers: {:?}", provider_manager.list_providers());
     println!("  Plugins: {} loaded", plugin_manager.loaded_count());
+    println!("  History: {} messages per channel", max_history);
+
+    // Auto-spawn configured channel adapters
+    for (name, channel_config) in &config.channels {
+        match channel_config.channel_type {
+            fugue_core::config::ChannelType::Telegram => {
+                let bot_token = match &channel_config.credential {
+                    Some(cred_ref) => {
+                        let cred_name = cred_ref.strip_prefix("vault:").unwrap_or(cred_ref);
+                        match vault.as_ref().and_then(|v| v.get(cred_name).ok().flatten()) {
+                            Some(token) => token,
+                            None => {
+                                tracing::warn!(
+                                    "skipping telegram adapter: credential '{}' not found",
+                                    cred_name
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::warn!("skipping telegram adapter: no credential configured");
+                        continue;
+                    }
+                };
+
+                let allowed_ids = channel_config.allowed_ids.clone();
+                let sock = config.core.socket_path.clone();
+                let adapter_name = name.clone();
+
+                tokio::spawn(async move {
+                    tracing::info!("spawning telegram adapter '{}'", adapter_name);
+                    let adapter =
+                        fugue_adapters::telegram::TelegramAdapter::new(bot_token, allowed_ids);
+                    if let Err(e) = adapter.run(&sock).await {
+                        tracing::error!("telegram adapter '{}' exited: {}", adapter_name, e);
+                    }
+                });
+
+                println!("  Telegram adapter '{}' started", name);
+            }
+            _ => {
+                tracing::debug!(
+                    "skipping unsupported channel type: {:?}",
+                    channel_config.channel_type
+                );
+            }
+        }
+    }
+
     println!("  Press Ctrl+C to stop");
 
     // Accept IPC connections
@@ -186,11 +242,39 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                     }
                 };
 
-                // Build conversation history
-                let history = vec![ChatMessage {
-                    role: "user".to_string(),
-                    content: user_content,
-                }];
+                // Store user message in conversation history
+                {
+                    let st = state.lock().unwrap();
+                    let _ = st.add_message(
+                        &msg.channel,
+                        &msg.sender_id,
+                        msg.sender_name.as_deref(),
+                        "user",
+                        &user_content,
+                        Some(&msg.message_id),
+                    );
+                }
+
+                // Build conversation history from stored messages
+                let history: Vec<ChatMessage> = {
+                    let st = state.lock().unwrap();
+                    match st.get_recent_messages(&msg.channel, max_history) {
+                        Ok(msgs) => msgs
+                            .into_iter()
+                            .map(|m| ChatMessage {
+                                role: m.role,
+                                content: m.content,
+                            })
+                            .collect(),
+                        Err(e) => {
+                            tracing::warn!("failed to load history: {}, using current message only", e);
+                            vec![ChatMessage {
+                                role: "user".to_string(),
+                                content: user_content.clone(),
+                            }]
+                        }
+                    }
+                };
 
                 // Try to get an LLM response
                 let providers = provider_manager.list_providers();
@@ -229,6 +313,19 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                             let final_content = result
                                 .modified_response
                                 .unwrap_or(response.content);
+
+                            // Store assistant response in conversation history
+                            {
+                                let st = state.lock().unwrap();
+                                let _ = st.add_message(
+                                    &msg.channel,
+                                    "assistant",
+                                    None,
+                                    "assistant",
+                                    &final_content,
+                                    None,
+                                );
+                            }
 
                             let route_response = RouteResponse {
                                 channel: msg.channel.clone(),
@@ -399,11 +496,7 @@ async fn handle_adapter_connection(
 }
 
 /// Send a response to an adapter via its registered response channel.
-async fn send_to_adapter(
-    channels: &ResponseChannels,
-    channel_name: &str,
-    response: RouteResponse,
-) {
+async fn send_to_adapter(channels: &ResponseChannels, channel_name: &str, response: RouteResponse) {
     let channels = channels.lock().await;
     if let Some(sender) = channels.get(channel_name) {
         if let Err(e) = sender.send(response).await {

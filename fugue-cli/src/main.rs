@@ -35,6 +35,12 @@ enum Commands {
     /// Show status of core and adapters
     Status,
 
+    /// Connect a channel adapter to the running daemon
+    Connect {
+        /// Channel name from config (e.g., "telegram")
+        channel: String,
+    },
+
     /// Interactive CLI chat session
     Chat {
         /// LLM provider to use
@@ -170,28 +176,27 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Start { config, foreground } => {
-            commands::start::run(config, foreground).await
-        }
+        Commands::Start { config, foreground } => commands::start::run(config, foreground).await,
         Commands::Stop => commands::stop::run().await,
         Commands::Status => commands::status::run().await,
-        Commands::Chat { provider, system } => {
-            commands::chat::run(provider, system).await
-        }
+        Commands::Connect { channel } => commands::connect::run(channel).await,
+        Commands::Chat { provider, system } => commands::chat::run(provider, system).await,
         Commands::Config { action } => match action {
             ConfigAction::Init { force } => commands::config::init(force).await,
             ConfigAction::Show => commands::config::show().await,
             ConfigAction::Validate => commands::config::validate().await,
         },
         Commands::Vault { action } => match action {
-            VaultAction::Init { password } => {
-                commands::vault::init(password).await
-            }
-            VaultAction::Set { name, value, password } => {
-                commands::vault::set(&name, value.as_deref(), password).await
-            }
+            VaultAction::Init { password } => commands::vault::init(password).await,
+            VaultAction::Set {
+                name,
+                value,
+                password,
+            } => commands::vault::set(&name, value.as_deref(), password).await,
             VaultAction::List { password } => commands::vault::list(password).await,
-            VaultAction::Remove { name, password } => commands::vault::remove(&name, password).await,
+            VaultAction::Remove { name, password } => {
+                commands::vault::remove(&name, password).await
+            }
         },
         Commands::Plugin { action } => match action {
             PluginAction::Install { path } => commands::plugin::install(&path).await,

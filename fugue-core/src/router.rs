@@ -63,11 +63,7 @@ impl Router {
     }
 
     /// Register a channel adapter
-    pub fn register_channel(
-        &mut self,
-        name: String,
-        response_sender: mpsc::Sender<RouteResponse>,
-    ) {
+    pub fn register_channel(&mut self, name: String, response_sender: mpsc::Sender<RouteResponse>) {
         tracing::info!("registered channel: {}", name);
         self.channels.insert(name, response_sender);
     }
@@ -97,9 +93,10 @@ impl Router {
             FugueError::Router(format!("channel '{}' not registered", response.channel))
         })?;
 
-        sender.send(response).await.map_err(|e| {
-            FugueError::Router(format!("failed to send response: {}", e))
-        })?;
+        sender
+            .send(response)
+            .await
+            .map_err(|e| FugueError::Router(format!("failed to send response: {}", e)))?;
 
         Ok(())
     }

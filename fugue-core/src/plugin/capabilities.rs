@@ -65,12 +65,10 @@ impl Capability {
     /// Get the risk level of this capability
     pub fn risk_level(&self) -> RiskLevel {
         match self {
-            Capability::IpcMessages | Capability::StateRead | Capability::LlmCall => {
-                RiskLevel::Low
+            Capability::IpcMessages | Capability::StateRead | Capability::LlmCall => RiskLevel::Low,
+            Capability::StateWrite | Capability::FsRead(_) | Capability::NetOutbound(Some(_)) => {
+                RiskLevel::Medium
             }
-            Capability::StateWrite
-            | Capability::FsRead(_)
-            | Capability::NetOutbound(Some(_)) => RiskLevel::Medium,
             Capability::FsWrite(_) | Capability::NetOutbound(None) => RiskLevel::High,
             Capability::ExecSubprocess | Capability::CredentialRead(_) => RiskLevel::Critical,
         }
@@ -141,10 +139,7 @@ impl fmt::Display for RiskLevel {
 }
 
 /// Check if a set of granted capabilities satisfies all requested capabilities
-pub fn check_capabilities(
-    granted: &[Capability],
-    requested: &[Capability],
-) -> Vec<Capability> {
+pub fn check_capabilities(granted: &[Capability], requested: &[Capability]) -> Vec<Capability> {
     let mut denied = Vec::new();
     for req in requested {
         let satisfied = granted.iter().any(|g| g.satisfies(req));
@@ -176,10 +171,16 @@ mod tests {
                 "https://api.example.com".to_string()
             )))
         );
-        assert_eq!(Capability::parse("ipc:messages"), Some(Capability::IpcMessages));
+        assert_eq!(
+            Capability::parse("ipc:messages"),
+            Some(Capability::IpcMessages)
+        );
         assert_eq!(Capability::parse("llm:call"), Some(Capability::LlmCall));
         assert_eq!(Capability::parse("state:read"), Some(Capability::StateRead));
-        assert_eq!(Capability::parse("state:write"), Some(Capability::StateWrite));
+        assert_eq!(
+            Capability::parse("state:write"),
+            Some(Capability::StateWrite)
+        );
         assert_eq!(
             Capability::parse("exec:subprocess"),
             Some(Capability::ExecSubprocess)

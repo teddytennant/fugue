@@ -37,6 +37,13 @@ pub struct CoreConfig {
 
     #[serde(default = "default_true")]
     pub audit_enabled: bool,
+
+    /// System prompt sent to the LLM at the start of every conversation
+    pub system_prompt: Option<String>,
+
+    /// Maximum number of conversation history messages per channel (default 50)
+    #[serde(default = "default_max_history")]
+    pub max_history_messages: usize,
 }
 
 impl Default for CoreConfig {
@@ -45,6 +52,8 @@ impl Default for CoreConfig {
             socket_path: default_socket_path(),
             log_level: default_log_level(),
             audit_enabled: true,
+            system_prompt: None,
+            max_history_messages: default_max_history(),
         }
     }
 }
@@ -190,6 +199,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_max_history() -> usize {
+    50
+}
+
 fn default_bind_addr() -> String {
     "127.0.0.1".to_string()
 }
@@ -224,7 +237,11 @@ fn default_execution_timeout_ms() -> u64 {
 impl FugueConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path).map_err(|e| {
-            FugueError::Config(format!("failed to read config file {}: {}", path.display(), e))
+            FugueError::Config(format!(
+                "failed to read config file {}: {}",
+                path.display(),
+                e
+            ))
         })?;
         Self::parse(&content)
     }
@@ -633,7 +650,11 @@ type = "{}"
                 name, type_str
             );
             let result = FugueConfig::parse(&toml_str);
-            assert!(result.is_ok(), "channel type '{}' should be valid", type_str);
+            assert!(
+                result.is_ok(),
+                "channel type '{}' should be valid",
+                type_str
+            );
         }
     }
 

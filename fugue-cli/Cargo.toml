@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 fugue-core = { path = "../fugue-core" }
+fugue-adapters = { path = "../fugue-adapters" }
 tokio = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }

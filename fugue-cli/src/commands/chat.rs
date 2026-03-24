@@ -32,7 +32,12 @@ pub async fn run(provider_name: Option<String>, system_prompt: Option<String>) -
     }
 
     let provider = provider_name
-        .or_else(|| provider_manager.list_providers().first().map(|s| s.to_string()))
+        .or_else(|| {
+            provider_manager
+                .list_providers()
+                .first()
+                .map(|s| s.to_string())
+        })
         .ok_or_else(|| anyhow::anyhow!("no provider available"))?;
 
     println!("Fugue Chat (provider: {}, /quit to exit)", provider);

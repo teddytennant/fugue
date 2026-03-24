@@ -75,15 +75,13 @@ impl Vault {
     }
 
     /// Derive a master key from a password and salt using PBKDF2-HMAC-SHA256
-    pub fn derive_key_from_password(password: &str, salt: &[u8; SALT_SIZE]) -> Result<[u8; KEY_SIZE]> {
+    pub fn derive_key_from_password(
+        password: &str,
+        salt: &[u8; SALT_SIZE],
+    ) -> Result<[u8; KEY_SIZE]> {
         let mut key = [0u8; KEY_SIZE];
-        pbkdf2::<Hmac<Sha256>>(
-            password.as_bytes(),
-            salt,
-            PBKDF2_ITERATIONS,
-            &mut key,
-        )
-        .map_err(|e| FugueError::Vault(format!("PBKDF2 key derivation failed: {}", e)))?;
+        pbkdf2::<Hmac<Sha256>>(password.as_bytes(), salt, PBKDF2_ITERATIONS, &mut key)
+            .map_err(|e| FugueError::Vault(format!("PBKDF2 key derivation failed: {}", e)))?;
         Ok(key)
     }
 
@@ -165,18 +163,15 @@ impl Vault {
 
     /// Resolve a credential reference (e.g., "vault:my-key") to its value
     pub fn resolve_credential(&self, reference: &str) -> Result<String> {
-        let name = reference
-            .strip_prefix("vault:")
-            .ok_or_else(|| {
-                FugueError::Vault(format!(
-                    "invalid credential reference '{}'; must start with 'vault:'",
-                    reference
-                ))
-            })?;
+        let name = reference.strip_prefix("vault:").ok_or_else(|| {
+            FugueError::Vault(format!(
+                "invalid credential reference '{}'; must start with 'vault:'",
+                reference
+            ))
+        })?;
 
-        self.get(name)?.ok_or_else(|| {
-            FugueError::Vault(format!("credential '{}' not found in vault", name))
-        })
+        self.get(name)?
+            .ok_or_else(|| FugueError::Vault(format!("credential '{}' not found in vault", name)))
     }
 
     // --- Encrypted file backend ---
@@ -199,17 +194,13 @@ impl Vault {
         let cipher = Aes256Gcm::new_from_slice(key)
             .map_err(|e| FugueError::Vault(format!("invalid key: {}", e)))?;
 
-        let nonce_bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &encrypted.nonce,
-        )
-        .map_err(|e| FugueError::Vault(format!("invalid nonce: {}", e)))?;
+        let nonce_bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &encrypted.nonce)
+                .map_err(|e| FugueError::Vault(format!("invalid nonce: {}", e)))?;
 
-        let ciphertext = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &encrypted.data,
-        )
-        .map_err(|e| FugueError::Vault(format!("invalid ciphertext: {}", e)))?;
+        let ciphertext =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &encrypted.data)
+                .map_err(|e| FugueError::Vault(format!("invalid ciphertext: {}", e)))?;
 
         let nonce = Nonce::from_slice(&nonce_bytes);
         let plaintext = cipher
@@ -254,7 +245,9 @@ impl Vault {
 
     fn set_encrypted_file(&self, name: &str, value: &str) -> Result<()> {
         let mut store = self.load_store()?;
-        store.credentials.insert(name.to_string(), value.to_string());
+        store
+            .credentials
+            .insert(name.to_string(), value.to_string());
         self.save_store(&store)
     }
 
@@ -298,7 +291,6 @@ impl Vault {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,10 +298,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn test_vault(dir: &Path) -> Vault {
-        let mut vault = Vault::new(
-            VaultBackend::EncryptedFile,
-            Some(dir.join("vault.enc")),
-        );
+        let mut vault = Vault::new(VaultBackend::EncryptedFile, Some(dir.join("vault.enc")));
         vault.init_with_key(Vault::generate_key());
         vault
     }
@@ -514,10 +503,7 @@ mod tests {
     #[test]
     fn test_keyring_backend_returns_error() {
         let dir = TempDir::new().unwrap();
-        let mut vault = Vault::new(
-            VaultBackend::Keyring,
-            Some(dir.path().join("vault.enc")),
-        );
+        let mut vault = Vault::new(VaultBackend::Keyring, Some(dir.path().join("vault.enc")));
         vault.init_with_key(Vault::generate_key());
 
         let set_err = vault.set("key", "value").unwrap_err().to_string();
@@ -533,10 +519,7 @@ mod tests {
     #[test]
     fn test_keyring_list_returns_error() {
         let dir = TempDir::new().unwrap();
-        let mut vault = Vault::new(
-            VaultBackend::Keyring,
-            Some(dir.path().join("vault.enc")),
-        );
+        let mut vault = Vault::new(VaultBackend::Keyring, Some(dir.path().join("vault.enc")));
         vault.init_with_key(Vault::generate_key());
 
         let list_err = vault.list().unwrap_err().to_string();
@@ -591,7 +574,10 @@ mod tests {
 
         let result = vault.set("../etc/passwd", "value");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid characters"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid characters"));
 
         let result = vault.set("foo/bar", "value");
         assert!(result.is_err());
@@ -701,10 +687,7 @@ mod tests {
         // Write garbage to vault file
         std::fs::write(&vault_path, "this is not valid json").unwrap();
 
-        let mut vault = Vault::new(
-            VaultBackend::EncryptedFile,
-            Some(vault_path),
-        );
+        let mut vault = Vault::new(VaultBackend::EncryptedFile, Some(vault_path));
         vault.init_with_key(Vault::generate_key());
 
         let result = vault.get("key");
