@@ -123,6 +123,54 @@ impl ProviderManager {
         }
     }
 
+    /// Try all configured providers in order until one succeeds.
+    ///
+    /// Returns the first successful response. If all providers fail, returns the
+    /// last error. Skips retryable failures (connection errors, 5xx, timeouts)
+    /// and tries the next provider. Non-retryable failures (auth errors, bad
+    /// requests) are returned immediately.
+    pub async fn chat_with_fallback(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Result<(LlmResponse, String)> {
+        if self.providers.is_empty() {
+            return Err(FugueError::Provider("no providers configured".to_string()));
+        }
+
+        let mut last_error = None;
+
+        for (name, _, _) in &self.providers {
+            match self.chat(name, messages).await {
+                Ok(response) => return Ok((response, name.clone())),
+                Err(e) => {
+                    let err_str = e.to_string();
+                    let is_retryable = err_str.contains("500")
+                        || err_str.contains("502")
+                        || err_str.contains("503")
+                        || err_str.contains("429")
+                        || err_str.contains("connection")
+                        || err_str.contains("timeout")
+                        || err_str.contains("timed out");
+
+                    tracing::warn!(
+                        provider = %name,
+                        retryable = is_retryable,
+                        "provider failed: {}",
+                        err_str
+                    );
+
+                    if !is_retryable {
+                        return Err(e);
+                    }
+
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| FugueError::Provider("all providers failed".to_string())))
+    }
+
     pub fn list_providers(&self) -> Vec<&str> {
         self.providers
             .iter()
@@ -590,6 +638,87 @@ mod tests {
     fn test_provider_manager_default() {
         let pm = ProviderManager::default();
         assert!(pm.list_providers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_chat_with_fallback_no_providers() {
+        let pm = ProviderManager::new();
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "test".to_string(),
+        }];
+
+        let result = pm.chat_with_fallback(&messages).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no providers"));
+    }
+
+    #[tokio::test]
+    async fn test_chat_with_fallback_tries_all_providers() {
+        let mut pm = ProviderManager::new();
+
+        // Register two unreachable Ollama providers
+        let config1 = ProviderConfig {
+            provider_type: ProviderType::Ollama,
+            base_url: Some("http://127.0.0.1:19998".to_string()),
+            model: Some("test".to_string()),
+            credential: None,
+            extra: Default::default(),
+        };
+        let config2 = ProviderConfig {
+            provider_type: ProviderType::Ollama,
+            base_url: Some("http://127.0.0.1:19999".to_string()),
+            model: Some("test".to_string()),
+            credential: None,
+            extra: Default::default(),
+        };
+
+        pm.register("provider1".to_string(), config1, None).unwrap();
+        pm.register("provider2".to_string(), config2, None).unwrap();
+
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "test".to_string(),
+        }];
+
+        // Both should fail (unreachable), but fallback should be attempted
+        let result = pm.chat_with_fallback(&messages).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_chat_with_fallback_stops_on_non_retryable() {
+        let mut pm = ProviderManager::new();
+
+        // Anthropic without API key — non-retryable auth error
+        let config = ProviderConfig {
+            provider_type: ProviderType::Anthropic,
+            base_url: None,
+            model: None,
+            credential: None,
+            extra: Default::default(),
+        };
+        pm.register("anthropic".to_string(), config, None).unwrap();
+
+        // Second provider (would never be reached)
+        let config2 = ProviderConfig {
+            provider_type: ProviderType::Ollama,
+            base_url: Some("http://127.0.0.1:19997".to_string()),
+            model: Some("test".to_string()),
+            credential: None,
+            extra: Default::default(),
+        };
+        pm.register("ollama".to_string(), config2, None).unwrap();
+
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "test".to_string(),
+        }];
+
+        // Should fail immediately on Anthropic auth error, not try Ollama
+        let result = pm.chat_with_fallback(&messages).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("API key"));
     }
 
     #[tokio::test]

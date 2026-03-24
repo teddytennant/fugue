@@ -276,9 +276,8 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                     }
                 };
 
-                // Try to get an LLM response
-                let providers = provider_manager.list_providers();
-                if let Some(provider_name) = providers.first() {
+                // Try to get an LLM response (with fallback across providers)
+                if !provider_manager.list_providers().is_empty() {
                     let mut messages = router.build_llm_messages(&history);
 
                     // Inject plugin context into the system prompt
@@ -300,10 +299,11 @@ pub async fn run(config_path: Option<String>, _foreground: bool) -> Result<()> {
                         }
                     }
 
-                    match provider_manager.chat(provider_name, &messages).await {
-                        Ok(response) => {
+                    match provider_manager.chat_with_fallback(&messages).await {
+                        Ok((response, provider_used)) => {
                             tracing::info!(
                                 request_id = %msg.request_id,
+                                provider = %provider_used,
                                 "LLM response: {}",
                                 &response.content[..response.content.len().min(100)]
                             );
